@@ -28,3 +28,5 @@ config.toml
 # Claude Code の個人設定。.claude/settings.json は共有するが、
 # local は各自の許可リストなので入れない。
 .claude/settings.local.json
+
+_temp/

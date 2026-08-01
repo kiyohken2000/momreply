@@ -16,9 +16,13 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
     let menu = Menu::with_items(app, &[&settings, &separator, &quit])?;
 
     TrayIconBuilder::with_id("main")
-        .icon(app.default_window_icon().cloned().expect("アイコンが無い"))
-        // メニューバーのアイコンはテンプレート画像にする。
-        // ライト / ダークの切り替えに OS 側が追従してくれる。
+        // アプリアイコンは流用できない。テンプレート画像はアルファだけを
+        // 見るため、色で描いた「抜き」（吹き出しの中の点）が潰れてしまう。
+        // トレイ用は抜きたい部分が実際に透明な専用画像を使う。
+        .icon(tauri::image::Image::from_bytes(include_bytes!(
+            "../icons/tray.png"
+        ))?)
+        // ライト / ダークの切り替えは OS 側に任せる。
         .icon_as_template(true)
         // 左クリックはポップオーバーの開閉に使うのでメニューを出さない。
         // メニューは右クリックで出す。

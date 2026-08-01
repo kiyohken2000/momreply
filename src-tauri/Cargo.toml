@@ -19,7 +19,9 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 momreply-core.workspace = true
-tauri = { version = "2", features = ["tray-icon"] }
+# image-png はトレイ用アイコンを PNG から読むために要る
+# （Image::from_bytes がこのフィーチャの下にある）。
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-positioner = { version = "2", features = ["tray-icon"] }
 serde.workspace = true
 serde_json.workspace = true

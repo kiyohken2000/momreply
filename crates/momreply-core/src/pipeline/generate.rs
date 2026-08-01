@@ -141,12 +141,24 @@ pub async fn draft_reply(
     let mut known_answers = Vec::new();
 
     for q in &found {
-        if let Some(answer) = store.known_answer(target.id, &q.text)? {
-            known_answers.push((q.text.clone(), answer));
+        // 「ごまかす」「触れない」は事実ではないので、答えとして渡さず
+        // 指示として渡す。混ぜるとその文言がそのまま送信される。
+        if let Some((answer, stance)) = store.known_answer(target.id, &q.text)? {
+            known_answers.push(prompt::KnownAnswer {
+                question: q.text.clone(),
+                stance: match stance.as_str() {
+                    "deflect" => prompt::Stance::Deflect,
+                    "ignore" => prompt::Stance::Ignore,
+                    _ => prompt::Stance::Fact(answer.unwrap_or_default()),
+                },
+            });
             continue;
         }
         if let Some(standing) = store.standing_answer(target.id, q.kind())? {
-            known_answers.push((q.text.clone(), standing.answer));
+            known_answers.push(prompt::KnownAnswer {
+                question: q.text.clone(),
+                stance: prompt::Stance::Fact(standing.answer),
+            });
         }
     }
 

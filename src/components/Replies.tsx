@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  answerQuestion,
   listPending,
   regenerate,
+  resolveQuestion,
   sendReply,
   skipPending,
   LENGTH_PRESETS,
+  STANCES,
   type Pending,
+  type Stance,
 } from "../api";
 
 /**
@@ -83,6 +85,8 @@ export default function Replies() {
 
   return (
     <div className="flex h-full flex-col">
+      {/* 中身は伸びるので、ここを 1 つのスクロール領域にする。
+          質問が増えても下が見えなくなることがない。 */}
       <div className="flex shrink-0 items-center justify-between px-4 pt-3 pb-1">
         <span className="text-xs font-medium">
           {current.display_name}
@@ -112,8 +116,9 @@ export default function Replies() {
         </div>
       </div>
 
-      <div className="shrink-0 px-4 pb-2">
-        <div className="max-h-24 overflow-y-auto rounded bg-neutral-100 p-2 text-xs whitespace-pre-wrap dark:bg-neutral-800">
+      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="px-4 pb-2">
+        <div className="rounded bg-neutral-100 p-2 text-xs whitespace-pre-wrap dark:bg-neutral-800">
           {current.incoming}
         </div>
         <div className="mt-1 text-[11px] text-neutral-400">
@@ -124,16 +129,16 @@ export default function Replies() {
 
       {/* 材料不足で止まった場合は、まずここを埋めないと直らない。 */}
       {needsAnswer && (
-        <div className="mx-4 mb-2 shrink-0 rounded border border-amber-300 bg-amber-50 p-2 dark:border-amber-700 dark:bg-amber-950/40">
+        <div className="mx-4 mb-2 rounded border border-amber-300 bg-amber-50 p-2 dark:border-amber-700 dark:bg-amber-950/40">
           <p className="mb-1 text-xs font-medium">答える材料がありません</p>
           {current.questions.map((q) => (
             <QuestionAnswer
               key={q.id}
               question={q.question}
               disabled={busy !== null}
-              onAnswer={(answer) =>
+              onResolve={(stance, answer) =>
                 run("answer", async () => {
-                  await answerQuestion(q.id, answer);
+                  await resolveQuestion(q.id, stance, answer);
                   await regenerate(current.chat_rowid, null, null);
                   await load();
                 })
@@ -143,7 +148,7 @@ export default function Replies() {
         </div>
       )}
 
-      <div className="flex min-h-0 flex-1 flex-col px-4 pb-3">
+      <div className="flex flex-col px-4 pb-3">
         <textarea
           ref={editor}
           value={draft}
@@ -160,7 +165,8 @@ export default function Replies() {
               });
             }
           }}
-          className="min-h-20 w-full flex-1 resize-none rounded border border-neutral-300 p-2 text-xs leading-relaxed disabled:opacity-50 dark:border-neutral-600 dark:bg-neutral-800"
+          rows={6}
+          className="w-full resize-none rounded border border-neutral-300 p-2 text-xs leading-relaxed disabled:opacity-50 dark:border-neutral-600 dark:bg-neutral-800"
         />
 
         <div className="mt-2 flex shrink-0 flex-wrap gap-1">
@@ -190,7 +196,12 @@ export default function Replies() {
           className="mt-2 w-full shrink-0 rounded border border-neutral-300 px-2 py-1 text-xs disabled:opacity-50 dark:border-neutral-600 dark:bg-neutral-800"
         />
 
-        <div className="mt-2 flex shrink-0 items-center gap-2">
+      </div>
+      </div>
+
+      {/* 操作は常に見えるところに置く。スクロールで隠れると押せない。 */}
+      <div className="shrink-0 border-t border-neutral-200 px-4 py-2 dark:border-neutral-700">
+        <div className="flex items-center gap-2">
           <button
             type="button"
             disabled={busy !== null}
@@ -231,8 +242,8 @@ export default function Replies() {
           </button>
         </div>
 
-        {message && <p className="mt-2 shrink-0 text-xs text-green-600">{message}</p>}
-        {error && <p className="mt-2 shrink-0 text-xs break-words text-red-600">{error}</p>}
+        {message && <p className="mt-1 text-xs text-green-600">{message}</p>}
+        {error && <p className="mt-1 text-xs break-words text-red-600">{error}</p>}
       </div>
     </div>
   );
@@ -241,39 +252,55 @@ export default function Replies() {
 function QuestionAnswer({
   question,
   disabled,
-  onAnswer,
+  onResolve,
 }: {
   question: string;
   disabled: boolean;
-  onAnswer: (answer: string) => void;
+  onResolve: (stance: Stance, answer: string | null) => void;
 }) {
   const [answer, setAnswer] = useState("");
   return (
-    <form
-      className="mb-1 last:mb-0"
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (answer.trim()) onAnswer(answer.trim());
-      }}
-    >
+    <div className="mb-2 last:mb-0">
       <div className="text-[11px]">{question}</div>
-      <div className="mt-0.5 flex gap-1">
+      <div className="mt-1 flex gap-1">
         <input
           type="text"
           value={answer}
           onChange={(e) => setAnswer(e.target.value)}
           disabled={disabled}
-          placeholder="答え"
+          placeholder="答え（「答える」を押すときだけ必要）"
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && answer.trim()) {
+              e.preventDefault();
+              onResolve("fact", answer.trim());
+            }
+          }}
           className="min-w-0 flex-1 rounded border border-neutral-300 px-2 py-0.5 text-[11px] disabled:opacity-50 dark:border-neutral-600 dark:bg-neutral-800"
         />
-        <button
-          type="submit"
-          disabled={disabled || !answer.trim()}
-          className="rounded bg-blue-600 px-2 py-0.5 text-[11px] text-white disabled:opacity-40"
-        >
-          登録
-        </button>
       </div>
-    </form>
+      <div className="mt-1 flex flex-wrap gap-1">
+        {STANCES.map((st) => (
+          <button
+            key={st.id}
+            type="button"
+            title={st.hint}
+            // 「答える」だけは入力が要る。ほかは押すだけで決まる。
+            disabled={disabled || (st.id === "fact" && !answer.trim())}
+            onClick={() => onResolve(st.id, st.id === "fact" ? answer.trim() : null)}
+            className={
+              "rounded px-2 py-0.5 text-[11px] disabled:opacity-40 " +
+              (st.id === "fact"
+                ? "bg-blue-600 text-white"
+                : "border border-neutral-300 dark:border-neutral-600")
+            }
+          >
+            {st.label}
+          </button>
+        ))}
+      </div>
+      <p className="mt-0.5 text-[10px] text-neutral-400">
+        「ごまかす」「触れない」は self.md に保存されません。
+      </p>
+    </div>
   );
 }

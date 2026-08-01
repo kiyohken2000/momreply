@@ -39,7 +39,7 @@ pub fn run() {
             commands::send_reply,
             commands::regenerate,
             commands::skip_pending,
-            commands::answer_question,
+            commands::resolve_question,
             commands::get_run_mode,
             commands::set_run_mode,
         ])

@@ -82,8 +82,21 @@ export function skipPending(chatRowid: number): Promise<void> {
   return invoke("skip_pending", { chatRowid });
 }
 
-export function answerQuestion(id: number, answer: string): Promise<void> {
-  return invoke("answer_question", { id, answer });
+/** 質問への答え方。fact のときだけ self.md に書かれる。 */
+export type Stance = "fact" | "deflect" | "ignore";
+
+export const STANCES: { id: Stance; label: string; hint: string }[] = [
+  { id: "fact", label: "答える", hint: "入力した内容を事実として self.md に保存します" },
+  { id: "deflect", label: "ごまかす", hint: "はっきり答えず受け流します" },
+  { id: "ignore", label: "触れない", hint: "この質問には触れずに返します" },
+];
+
+export function resolveQuestion(
+  id: number,
+  stance: Stance,
+  answer: string | null,
+): Promise<void> {
+  return invoke("resolve_question", { id, stance, answer });
 }
 
 export type RunMode = { auto_send: boolean; dry_run: boolean };

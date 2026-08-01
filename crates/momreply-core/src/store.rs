@@ -14,11 +14,11 @@ use crate::imessage;
 use crate::questions::{Question, QuestionKind};
 
 /// `read_pending_row` が期待する列順。
-const PENDING_COLUMNS: &str =
-    "SELECT id, question, context, kind, answer, chat_rowid, created_at FROM pending_questions";
+const PENDING_COLUMNS: &str = "SELECT id, question, context, kind, answer, chat_rowid, \
+     created_at, stance FROM pending_questions";
 
 /// スキーマバージョン。`PRAGMA user_version` で管理する。
-const SCHEMA_VERSION: i32 = 3;
+const SCHEMA_VERSION: i32 = 4;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS targets (
@@ -119,6 +119,8 @@ CREATE TABLE IF NOT EXISTS pending_questions (
   question    TEXT    NOT NULL,      -- 原文のまま
   context     TEXT,                  -- 質問の前に置かれた状況説明
   kind        TEXT    NOT NULL DEFAULT 'fact',  -- fact|visit
+  -- どう答えるか。fact 以外は self.md に書かない（事実ではないため）。
+  stance      TEXT    NOT NULL DEFAULT 'fact',  -- fact|deflect|ignore
   norm_key    TEXT    NOT NULL DEFAULT '',  -- 表記ゆれを吸収した重複判定キー
   answer      TEXT,
   answered_at INTEGER,
@@ -194,6 +196,8 @@ pub struct PendingQuestion {
     pub answer: Option<String>,
     pub chat_rowid: Option<i64>,
     pub created_at: i64,
+    /// `fact` | `deflect` | `ignore`。fact 以外は `self.md` に書かない。
+    pub stance: String,
 }
 
 /// 定型回答。
@@ -345,6 +349,12 @@ impl Store {
         if !self.has_column("pending_questions", "context")? {
             self.conn
                 .execute("ALTER TABLE pending_questions ADD COLUMN context TEXT", [])?;
+        }
+        if !self.has_column("pending_questions", "stance")? {
+            self.conn.execute(
+                "ALTER TABLE pending_questions ADD COLUMN stance TEXT NOT NULL DEFAULT 'fact'",
+                [],
+            )?;
         }
         if !self.has_column("pending_questions", "kind")? {
             self.conn.execute(
@@ -704,14 +714,41 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// 既に答えを持っている質問なら、その答えを返す。
+    /// 対応が決まっている質問なら、その内容と答え方を返す。
     ///
-    /// 生成の前に呼ぶ。答えがあれば人間に聞かずに生成へ進める。
-    pub fn known_answer(&self, target_id: i64, question: &str) -> Result<Option<String>> {
+    /// 答え方が `deflect` / `ignore` の場合、答えの本文は無い。
+    /// 事実として扱わせないため、呼び出し側で区別すること。
+    pub fn known_answer(
+        &self,
+        target_id: i64,
+        question: &str,
+    ) -> Result<Option<(Option<String>, String)>> {
         let key = crate::questions::normalize(question);
-        Ok(self
-            .find_question_by_key(target_id, &key)?
-            .and_then(|q| q.answer))
+        Ok(self.find_question_by_key(target_id, &key)?.and_then(|q| {
+            let decided = q.answer.is_some() || q.stance != "fact";
+            decided.then_some((q.answer, q.stance))
+        }))
+    }
+
+    /// 質問への対応を決める。
+    ///
+    /// `fact` のときだけ `self.md` に書く価値がある。`deflect` / `ignore`
+    /// は事実ではないので、呼び出し側は `self.md` に追記しないこと。
+    pub fn resolve_question(
+        &self,
+        id: i64,
+        stance: &str,
+        answer: Option<&str>,
+    ) -> Result<PendingQuestion> {
+        self.conn.execute(
+            "UPDATE pending_questions
+             SET stance = ?2, answer = ?3, answered_at = ?4 WHERE id = ?1",
+            (id, stance, answer, now_unix()),
+        )?;
+        self.conn
+            .query_row(&format!("{PENDING_COLUMNS} WHERE id = ?1"), [id], Self::read_pending_row)
+            .optional()?
+            .with_context(|| format!("質問 #{id} が無い"))
     }
 
     pub fn unanswered_questions(&self, target_id: i64) -> Result<Vec<PendingQuestion>> {
@@ -1149,6 +1186,7 @@ impl Store {
             answer: row.get(4)?,
             chat_rowid: row.get(5)?,
             created_at: row.get(6)?,
+            stance: row.get(7)?,
         })
     }
 

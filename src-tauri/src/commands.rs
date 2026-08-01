@@ -385,14 +385,35 @@ pub fn skip_pending(chat_rowid: i64) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// 材料不足の質問に答える。self.md にも追記される。
+/// 質問への対応を決める。
+///
+/// `stance` は `fact` | `deflect` | `ignore`。
+///
+/// **`self.md` に書くのは `fact` のときだけ。** 「ごまかす」「触れない」は
+/// 事実ではないので、書くと以後の生成が汚染される。
 #[tauri::command]
-pub fn answer_question(id: i64, answer: String) -> Result<(), String> {
+pub fn resolve_question(
+    id: i64,
+    stance: String,
+    answer: Option<String>,
+) -> Result<(), String> {
     let store = Store::open_default().map_err(|e| e.to_string())?;
+    let answer = answer.map(|a| a.trim().to_string()).filter(|a| !a.is_empty());
+
+    if stance == "fact" && answer.is_none() {
+        return Err("答えを入力してください".into());
+    }
+
     let q = store
-        .answer_question(id, &answer)
+        .resolve_question(id, &stance, answer.as_deref())
         .map_err(|e| e.to_string())?;
-    momreply_core::profile::append_fact(&q.question, &answer).map_err(|e| e.to_string())
+
+    if stance == "fact" {
+        if let Some(a) = &answer {
+            momreply_core::profile::append_fact(&q.question, a).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 // MARK: キルスイッチとドライラン（仕様書 6.4.6 / 6.4.7）

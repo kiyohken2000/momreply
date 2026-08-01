@@ -65,14 +65,35 @@ pub struct Context {
     pub incoming: String,
     /// 今回のメッセージから取り出した質問。
     pub questions: Vec<Question>,
-    /// 質問に対して既に分かっている答え（`self.md` 由来・定型回答）。
-    pub known_answers: Vec<(String, String)>,
+    /// 質問への対応が決まっているもの。
+    pub known_answers: Vec<KnownAnswer>,
     /// 現在日時の表示。
     pub now: String,
     /// 長さの指示（仕様書 6.9.3）。
     pub length_instruction: String,
     /// 再生成のときだけ入る（仕様書 8.3）。
     pub retry: Option<Retry>,
+}
+
+/// 質問への対応。
+#[derive(Debug, Clone)]
+pub struct KnownAnswer {
+    pub question: String,
+    pub stance: Stance,
+}
+
+/// どう答えるか。
+///
+/// **事実と指示を混ぜてはいけない。** 「ごまかす」を答えとして渡すと、
+/// モデルはその 3 文字をそのまま送信文にする。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Stance {
+    /// 確認済みの事実。そのまま使わせる。
+    Fact(String),
+    /// はっきり答えず濁す。
+    Deflect,
+    /// 触れない。
+    Ignore,
 }
 
 /// やり直しの指示。
@@ -139,12 +160,27 @@ pub fn system(ctx: &Context) -> String {
     s.push_str("\n\n");
 
     if !ctx.known_answers.is_empty() {
-        s.push_str("# 今回の質問に対する答え\n");
-        s.push_str("以下はあなた本人が確認済みの内容。これをそのまま使うこと。\n");
-        for (q, a) in &ctx.known_answers {
-            s.push_str(&format!("- 「{q}」→ {a}\n"));
+        s.push_str("# 今回の質問への対応\n");
+        for ka in &ctx.known_answers {
+            match &ka.stance {
+                Stance::Fact(answer) => s.push_str(&format!(
+                    "- 「{}」→ {answer}（本人が確認済みの事実。これをそのまま使う）\n",
+                    ka.question
+                )),
+                // 指示であって答えではない。この文言自体を送信文にしないこと。
+                Stance::Deflect => s.push_str(&format!(
+                    "- 「{}」→ はっきり答えず、言葉を濁して受け流す。\
+                       断定も約束もしない（指示。この文をそのまま書かない）\n",
+                    ka.question
+                )),
+                Stance::Ignore => s.push_str(&format!(
+                    "- 「{}」→ この質問には触れない。他の話題だけで返す\
+                       （指示。この文をそのまま書かない）\n",
+                    ka.question
+                )),
+            }
         }
-        s.push('\n');
+        s.push_str("対応が決まっている質問については、材料不足とみなさないこと。\n\n");
     }
 
     s.push_str(&format!("# {}について\n", ctx.display_name));
@@ -254,7 +290,10 @@ mod tests {
                 text: "保険証はある？".into(),
                 context: None,
             }],
-            known_answers: vec![("保険証はある？".into(), "持っている".into())],
+            known_answers: vec![KnownAnswer {
+                question: "保険証はある？".into(),
+                stance: Stance::Fact("持っている".into()),
+            }],
             now: "2026年8月1日(土) 20:00".into(),
             length_instruction: "母のメッセージと同じくらいの長さで返す。".into(),
             retry: None,
@@ -282,6 +321,31 @@ mod tests {
     fn known_answers_are_shown_verbatim() {
         let s = system(&ctx());
         assert!(s.contains("「保険証はある？」→ 持っている"));
+    }
+
+    /// 「ごまかす」を答えとして渡すと、その 3 文字がそのまま送信される。
+    /// 指示であることを明示し、書き写さないよう伝えること。
+    #[test]
+    fn a_stance_is_rendered_as_an_instruction_not_an_answer() {
+        let mut c = ctx();
+        c.known_answers = vec![KnownAnswer {
+            question: "何故ですか？".into(),
+            stance: Stance::Deflect,
+        }];
+        let s = system(&c);
+        assert!(s.contains("言葉を濁して"));
+        assert!(s.contains("この文をそのまま書かない"));
+    }
+
+    /// 対応が決まっているなら材料不足ではない。合図を返させない。
+    #[test]
+    fn a_decided_stance_is_not_missing_material() {
+        let mut c = ctx();
+        c.known_answers = vec![KnownAnswer {
+            question: "何故ですか？".into(),
+            stance: Stance::Ignore,
+        }];
+        assert!(system(&c).contains("材料不足とみなさないこと"));
     }
 
     #[test]

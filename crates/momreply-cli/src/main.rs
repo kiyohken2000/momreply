@@ -5,7 +5,8 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use momreply_core::{
-    imessage, profile, questions,
+    imessage, profile,
+    questions::{self, QuestionKind},
     store::{NewTarget, Store},
 };
 
@@ -71,6 +72,18 @@ enum QuestionCmd {
         #[arg(long)]
         answer: String,
     },
+    /// 「明日来る？」のような、その都度聞かれるが答えが一貫している
+    /// 質問に、既定の答えを設定する。
+    Standing {
+        #[arg(long)]
+        slug: String,
+        /// 既定の答え。省略すると現在の設定を表示する。
+        #[arg(long)]
+        set: Option<String>,
+        /// この定型回答での自動送信を承認する（初回のみ必要）。
+        #[arg(long)]
+        confirm: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -135,6 +148,7 @@ fn cmd_questions(chat_db: &rusqlite::Connection, cmd: QuestionCmd) -> Result<()>
             let mut scanned = 0usize;
             let mut added = 0usize;
             let mut already_known = 0usize;
+            let mut visit = 0usize;
 
             for m in &messages {
                 // 自分の発言と除外対象は見ない。
@@ -150,7 +164,10 @@ fn cmd_questions(chat_db: &rusqlite::Connection, cmd: QuestionCmd) -> Result<()>
                 scanned += found.len();
 
                 for q in &found {
-                    if store.known_answer(target.id, q)?.is_some() {
+                    if q.kind() == QuestionKind::Visit {
+                        visit += 1;
+                    }
+                    if store.known_answer(target.id, &q.text)?.is_some() {
                         already_known += 1;
                     }
                 }
@@ -164,6 +181,17 @@ fn cmd_questions(chat_db: &rusqlite::Connection, cmd: QuestionCmd) -> Result<()>
             );
             println!("  新規に記録: {added} 件");
             println!("  既に答えがある: {already_known} 件");
+            println!("  予定型（定型回答で扱う）: {visit} 件");
+
+            if visit > 0 && store.standing_answer(target.id, QuestionKind::Visit)?.is_none() {
+                println!();
+                println!(
+                    "予定型の質問に既定の答えが未設定です。設定するまで毎回確認が必要になります:"
+                );
+                println!(
+                    "  momreply-cli questions standing --slug {slug} --set \"行かない\""
+                );
+            }
             if added > 0 {
                 println!();
                 println!("`momreply-cli questions list --slug {slug}` で確認して答える。");
@@ -183,6 +211,11 @@ fn cmd_questions(chat_db: &rusqlite::Connection, cmd: QuestionCmd) -> Result<()>
             println!("未回答 {} 件:", pending.len());
             for q in &pending {
                 println!("  #{:<4} {}", q.id, q.question);
+                if let Some(ctx) = &q.context {
+                    let brief: String = ctx.chars().take(60).collect();
+                    let ellipsis = if ctx.chars().count() > 60 { "…" } else { "" };
+                    println!("        （状況: {brief}{ellipsis}）");
+                }
             }
             println!();
             println!("答える: momreply-cli questions answer --id <ID> --answer \"...\"");
@@ -197,6 +230,48 @@ fn cmd_questions(chat_db: &rusqlite::Connection, cmd: QuestionCmd) -> Result<()>
             println!();
             println!("self.md: {}", momreply_core::paths::self_profile()?.display());
             println!("次から同じ質問が来ても、あなたに聞かずに答えられます。");
+        }
+
+        QuestionCmd::Standing { slug, set, confirm } => {
+            let target = store
+                .target_by_slug(&slug)?
+                .with_context(|| format!("'{slug}' は登録されていない"))?;
+
+            if let Some(answer) = set {
+                let saved = store.set_standing_answer(target.id, QuestionKind::Visit, &answer)?;
+                println!("予定型の質問への既定の答えを設定しました。");
+                println!("  「明日来る？」「泊まる？」などに対して: 「{}」", saved.answer);
+                println!();
+                if saved.is_confirmed() {
+                    println!("承認済みのため、自動送信に使われます。");
+                } else {
+                    println!("まだ自動送信には使いません。内容を確認したうえで承認してください:");
+                    println!("  momreply-cli questions standing --slug {slug} --confirm");
+                }
+                return Ok(());
+            }
+
+            if confirm {
+                store.confirm_standing_answer(target.id, QuestionKind::Visit)?;
+                println!("承認しました。以後この定型回答は自動送信に使われます。");
+                println!("変更したいときは --set で上書きすると、承認は取り消されます。");
+                return Ok(());
+            }
+
+            let answers = store.list_standing_answers(target.id)?;
+            if answers.is_empty() {
+                println!("定型回答は未設定です。");
+                println!("  momreply-cli questions standing --slug {slug} --set \"行かない\"");
+                return Ok(());
+            }
+            for a in answers {
+                println!(
+                    "{:<8} 「{}」  {}",
+                    format!("{:?}", a.kind),
+                    a.answer,
+                    if a.is_confirmed() { "承認済み" } else { "未承認（自動送信しない）" }
+                );
+            }
         }
     }
     Ok(())

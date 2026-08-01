@@ -12,6 +12,41 @@
 //! 曖昧な文の意味解釈は LLM 側（生成時）に任せ、ここは「疑問文の切り出し」
 //! だけを担当する。
 
+/// 状況説明と質問を切り分ける閾値（文字数）。
+///
+/// 相手は「状況を数行書いてから最後に一言聞く」書き方をする。
+/// 全体を質問として扱うと、毎回文面が変わるため重複判定が効かない。
+/// 一方で短い文を切ると「書類は / あるの？」が「あるの？」だけになり
+/// 意味が失われる。実データでは 40 字前後が境目だった。
+const CONTEXT_SPLIT_THRESHOLD: usize = 40;
+
+/// 質問の種類。答えの出どころが変わる。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuestionKind {
+    /// 自分が来るか・泊まるかを聞かれている。答えはその都度変わるため
+    /// `self.md` の事実にはできない。定型回答（standing answer）を使う。
+    Visit,
+    /// それ以外。`self.md` の事実で答える。材料が無ければ人間に聞く。
+    Fact,
+}
+
+/// 訪問を尋ねる語幹。
+///
+/// **「行く」系は入れない。** 相手から見た自分の訪問は必ず「来る」であり、
+/// 「行く」は相手自身の行動か物のやり取り（「持って行けない」）を指す。
+/// 入れると誤分類して、無関係な質問に定型回答を返してしまう。
+const VISIT_STEMS: [&str; 9] = [
+    "来る",
+    "くる",
+    "来ます",
+    "来れ",
+    "来られ",
+    "来ない",
+    "こない",
+    "来い",
+    "泊ま",
+];
+
 /// 疑問符で終わらない疑問文の語尾。
 ///
 /// 相手が疑問符を省略することは多い（「いつ来るのか」「どうするつもり」）。
@@ -28,42 +63,83 @@ const QUESTION_SUFFIXES: [&str; 10] = [
     "いかが",
 ];
 
+/// 取り出した質問。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Question {
+    /// 質問そのもの。重複判定と人間への提示に使う。
+    pub text: String,
+    /// 質問の前に置かれた状況説明。生成時の文脈に使う。
+    pub context: Option<String>,
+}
+
+impl Question {
+    fn new(text: impl Into<String>) -> Self {
+        Question {
+            text: text.into(),
+            context: None,
+        }
+    }
+
+    pub fn kind(&self) -> QuestionKind {
+        classify(&self.text)
+    }
+}
+
 /// 本文から質問だけを取り出す。原文の表記のまま返す。
 ///
 /// 改行区切りで書かれた 1 つの質問（「書類は」「あるの？」）を
 /// 分断しないよう、終端記号が来るまで改行をまたいで連結する。
-pub fn extract(body: &str) -> Vec<String> {
+/// 連結結果が長くなった場合は、状況説明と質問に切り分ける。
+pub fn extract(body: &str) -> Vec<Question> {
     let mut out = Vec::new();
+    // 改行位置を保ったまま溜める。状況説明の切り出しに使う。
+    let mut lines: Vec<String> = Vec::new();
     let mut buf = String::new();
 
     for ch in body.chars() {
         match ch {
             '？' | '?' => {
                 buf.push(ch);
-                push_if_question(&mut out, &buf, true);
-                buf.clear();
+                lines.push(std::mem::take(&mut buf));
+                push_if_question(&mut out, &lines, true);
+                lines.clear();
             }
             '。' | '！' | '!' => {
                 buf.push(ch);
-                push_if_question(&mut out, &buf, false);
-                buf.clear();
+                lines.push(std::mem::take(&mut buf));
+                push_if_question(&mut out, &lines, false);
+                lines.clear();
             }
             '\n' => {
                 // 改行だけでは切らない。語尾が疑問形になっていれば
                 // そこで 1 文として確定させる。
-                if is_question_by_suffix(buf.trim()) {
-                    push_if_question(&mut out, &buf, false);
-                    buf.clear();
-                } else {
-                    buf.push(' ');
+                lines.push(std::mem::take(&mut buf));
+                if is_question_by_suffix(lines.last().map(|s| s.trim()).unwrap_or("")) {
+                    push_if_question(&mut out, &lines, false);
+                    lines.clear();
                 }
             }
             _ => buf.push(ch),
         }
     }
-    push_if_question(&mut out, &buf, false);
+    if !buf.trim().is_empty() {
+        lines.push(buf);
+    }
+    push_if_question(&mut out, &lines, false);
 
     out
+}
+
+/// 質問を種類で分ける。
+///
+/// 迷ったら [`QuestionKind::Fact`] に倒す。`Fact` は材料が無ければ
+/// 人間に聞きにいくため、誤っても誤答にはならない。一方 `Visit` の
+/// 誤判定は、無関係な質問に定型回答を自動送信することになる。
+pub fn classify(question: &str) -> QuestionKind {
+    if VISIT_STEMS.iter().any(|stem| question.contains(stem)) {
+        return QuestionKind::Visit;
+    }
+    QuestionKind::Fact
 }
 
 /// 同じ質問を二度人間に聞かないための正規化キー。
@@ -100,13 +176,38 @@ pub fn normalize(question: &str) -> String {
     s.to_string()
 }
 
-fn push_if_question(out: &mut Vec<String>, buf: &str, explicit: bool) {
-    let trimmed = buf.trim();
-    if trimmed.is_empty() {
+fn push_if_question(out: &mut Vec<Question>, lines: &[String], explicit: bool) {
+    let joined = lines
+        .iter()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if joined.is_empty() {
         return;
     }
-    if explicit || is_question_by_suffix(trimmed) {
-        out.push(trimmed.to_string());
+    if !explicit && !is_question_by_suffix(&joined) {
+        return;
+    }
+
+    // 短ければ丸ごと質問。切ると意味が落ちる。
+    if joined.chars().count() <= CONTEXT_SPLIT_THRESHOLD {
+        out.push(Question::new(joined));
+        return;
+    }
+
+    // 長い場合は最後の行を質問、それより前を状況説明とする。
+    let non_empty: Vec<&str> = lines
+        .iter()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect();
+    match non_empty.split_last() {
+        Some((last, before)) if !before.is_empty() => out.push(Question {
+            text: (*last).to_string(),
+            context: Some(before.join(" ")),
+        }),
+        _ => out.push(Question::new(joined)),
     }
 }
 
@@ -122,17 +223,37 @@ fn is_question_by_suffix(s: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn texts(body: &str) -> Vec<String> {
+        extract(body).into_iter().map(|q| q.text).collect()
+    }
+
     #[test]
     fn picks_up_explicit_questions() {
-        assert_eq!(extract("保険証は、ありますか？"), vec!["保険証は、ありますか？"]);
-        assert_eq!(extract("何故ですか？"), vec!["何故ですか？"]);
+        assert_eq!(texts("保険証は、ありますか？"), vec!["保険証は、ありますか？"]);
+        assert_eq!(texts("何故ですか？"), vec!["何故ですか？"]);
     }
 
     /// 相手は 1 つの質問を改行で分けて書く。ここで分断すると
     /// 「書類は」だけが質問として残り、意味が失われる。
     #[test]
-    fn a_question_split_across_newlines_stays_whole() {
-        assert_eq!(extract("書類は\nあるの？"), vec!["書類は あるの？"]);
+    fn a_short_question_split_across_newlines_stays_whole() {
+        assert_eq!(texts("書類は\nあるの？"), vec!["書類は あるの？"]);
+    }
+
+    /// 状況を数行書いてから最後に一言聞く形。全体を質問にすると
+    /// 毎回文面が変わって重複判定が効かなくなる。
+    #[test]
+    fn a_long_message_splits_into_context_and_question() {
+        let body = "今日、父が河川敷でバーベキューをするそうです\n\
+                    この前は皆で食事をしなかったから\n\
+                    姉たちは帰ったのでいません\n\
+                    くる？";
+        let got = extract(body);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].text, "くる？");
+        let context = got[0].context.as_ref().expect("状況説明が落ちている");
+        assert!(context.contains("バーベキュー"));
+        assert!(!context.contains("くる？"));
     }
 
     #[test]
@@ -143,17 +264,53 @@ mod tests {
 
     #[test]
     fn picks_up_questions_without_a_question_mark() {
-        assert_eq!(extract("いつ取得する予定ですか"), vec!["いつ取得する予定ですか"]);
-        assert_eq!(extract("どうするつもりなのか"), vec!["どうするつもりなのか"]);
+        assert_eq!(texts("いつ取得する予定ですか"), vec!["いつ取得する予定ですか"]);
+        assert_eq!(texts("どうするつもりなのか"), vec!["どうするつもりなのか"]);
     }
 
     #[test]
     fn separates_multiple_questions_in_one_message() {
-        let got = extract("免許証は、いつ取得する予定ですか？\nあと保険証はある？");
+        let got = texts("免許証は、いつ取得する予定ですか？\nあと保険証はある？");
         assert_eq!(
             got,
             vec!["免許証は、いつ取得する予定ですか？", "あと保険証はある？"]
         );
+    }
+
+    // MARK: 分類
+
+    #[test]
+    fn visit_questions_are_recognised() {
+        for q in [
+            "明日来る？",
+            "今日くる？",
+            "こないの？",
+            "泊まる？",
+            "今日も来なかったね いつ来る？",
+            "いつ来ますか？",
+        ] {
+            assert_eq!(classify(q), QuestionKind::Visit, "{q}");
+        }
+    }
+
+    #[test]
+    fn factual_questions_are_not_treated_as_visits() {
+        for q in [
+            "保険証は、ありますか？",
+            "免許証は、いつ取得する予定ですか？",
+            "何故ですか？",
+            "これ、迷惑メールだよね？",
+        ] {
+            assert_eq!(classify(q), QuestionKind::Fact, "{q}");
+        }
+    }
+
+    /// 「行く」系を訪問と見なすと、相手自身の行動や物のやり取りを
+    /// 誤って拾い、無関係な質問に定型回答を返してしまう。
+    #[test]
+    fn the_other_partys_own_actions_are_not_visits() {
+        assert_eq!(classify("持って行けないでしょう？"), QuestionKind::Fact);
+        assert_eq!(classify("そっちに送ろうか？"), QuestionKind::Fact);
     }
 
     /// 同じことを繰り返し聞かれても、人間に聞くのは一度だけにしたい。

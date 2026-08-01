@@ -5,6 +5,7 @@
 
 pub mod connection;
 pub mod reader;
+pub mod sender;
 pub mod watcher;
 
 pub use connection::{default_path, open_readonly};

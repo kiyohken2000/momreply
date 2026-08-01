@@ -50,6 +50,14 @@ enum Command {
     /// 相手からの質問と、それに対する自分の答えを管理する。
     #[command(subcommand)]
     Questions(QuestionCmd),
+    /// 送信経路の疎通確認。**自分のアカウント宛にしか送らない。**
+    SendTest {
+        /// 宛先。この Mac の iMessage 送信アカウントと一致する必要がある。
+        #[arg(long)]
+        to: String,
+        #[arg(long, default_value = "MomReply の送信テストです")]
+        text: String,
+    },
     /// 生成に使う設定を確認・変更する。
     Config {
         /// 主プロバイダ（anthropic|gemini|openai）。
@@ -179,6 +187,7 @@ async fn main() -> Result<()> {
         } => cmd_messages(&chat_db, &handle, limit, include_skipped),
         Command::Target(cmd) => cmd_target(&chat_db, cmd),
         Command::Questions(cmd) => cmd_questions(&chat_db, cmd),
+        Command::SendTest { to, text } => cmd_send_test(&chat_db, &to, &text),
         Command::Config { primary, user_name } => cmd_config(primary, user_name),
         Command::Fewshot { slug, limit, scan } => cmd_fewshot(&chat_db, &slug, limit, scan),
         Command::Generate {
@@ -188,6 +197,69 @@ async fn main() -> Result<()> {
             redo,
         } => cmd_generate(&chat_db, &slug, rowid, length.as_deref(), redo).await,
     }
+}
+
+/// この Mac の iMessage 送信アカウント一覧を chat.db から取る。
+///
+/// テスト送信の宛先を自分に限定するために使う。
+fn own_accounts(chat_db: &rusqlite::Connection) -> Result<Vec<String>> {
+    let mut stmt = chat_db.prepare(
+        "SELECT DISTINCT account FROM message
+         WHERE is_from_me = 1 AND account IS NOT NULL AND account != ''",
+    )?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        // `E:foo@example.com` / `P:+81...` の形で入っている。
+        let raw = row?;
+        let id = raw.split_once(':').map(|(_, rest)| rest).unwrap_or(&raw);
+        if !id.trim().is_empty() {
+            out.push(id.to_string());
+        }
+    }
+    Ok(out)
+}
+
+fn cmd_send_test(chat_db: &rusqlite::Connection, to: &str, text: &str) -> Result<()> {
+    // CLAUDE.md ルール2: テスト送信は自分の Apple ID 宛にのみ行う。
+    // 打ち間違いで他人に飛ばさないよう、コード側で弾く。
+    let accounts = own_accounts(chat_db)?;
+    if !accounts.iter().any(|a| a == to) {
+        bail!(
+            "'{to}' はこの Mac の iMessage 送信アカウントではありません。\n\
+             テスト送信は自分宛にのみ行います。使えるのは:\n  {}",
+            accounts.join("\n  ")
+        );
+    }
+
+    let handles = vec![to.to_string()];
+    let baseline = imessage::max_rowid(chat_db, &handles)?.unwrap_or(0);
+
+    println!("宛先: {to}（自分のアカウント）");
+    println!("本文: {text}");
+    println!("送信前の最大 ROWID: {baseline}");
+    println!();
+
+    imessage::sender::send(to, text)?;
+    println!("osascript は成功。ただしこれは送信できた証拠にならないので chat.db で確認します。");
+
+    let timeout = imessage::sender::verify_timeout();
+    println!("検証中（最大 {} 秒）…", timeout.as_secs());
+
+    match imessage::sender::verify(chat_db, &handles, baseline, text, timeout)? {
+        imessage::sender::Outcome::Sent { rowid } => {
+            println!();
+            println!("送信を確認しました。chat.db の ROWID = {rowid}");
+        }
+        imessage::sender::Outcome::Unverified => {
+            println!();
+            println!("chat.db に現れませんでした。送信に失敗した可能性があります。");
+            println!("**自動で再送はしません**（実は届いていた場合に二重送信になるため）。");
+            println!("メッセージ.app を開いて実際の状態を確認してください。");
+        }
+    }
+    Ok(())
 }
 
 fn cmd_config(primary: Option<String>, user_name: Option<String>) -> Result<()> {

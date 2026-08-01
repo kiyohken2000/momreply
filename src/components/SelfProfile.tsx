@@ -88,11 +88,11 @@ export default function SelfProfile() {
   }
 
   return (
-    <section>
-      <h2 className="px-4 pt-4 pb-2 text-xs font-semibold tracking-wide text-neutral-500 uppercase dark:text-neutral-400">
+    <section className="flex h-full flex-col">
+      <h2 className="shrink-0 px-4 pt-4 pb-2 text-xs font-semibold tracking-wide text-neutral-500 uppercase dark:text-neutral-400">
         自分について
       </h2>
-      <p className="px-4 pb-2 text-xs text-neutral-500 dark:text-neutral-400">
+      <p className="shrink-0 px-4 pb-2 text-xs text-neutral-500 dark:text-neutral-400">
         ここに書いた内容だけを、AI は事実として断定します。書かれていないことは
         推測せず、あなたに確認を求めます。
       </p>
@@ -104,8 +104,10 @@ export default function SelfProfile() {
         </p>
       )}
 
+      {/* 候補が多いときはここだけスクロールさせ、
+          本文の編集領域を潰さない。 */}
       {candidates.length > 0 && (
-        <div className="mx-4 mb-3 rounded border border-amber-300 bg-amber-50 p-2 dark:border-amber-700 dark:bg-amber-950/40">
+        <div className="mx-4 mb-3 max-h-56 shrink-0 overflow-y-auto rounded border border-amber-300 bg-amber-50 p-2 dark:border-amber-700 dark:bg-amber-950/40">
           <p className="mb-2 text-xs font-medium">
             追記候補 {candidates.length} 件（承認するまで反映されません）
           </p>
@@ -144,17 +146,18 @@ export default function SelfProfile() {
         </div>
       )}
 
-      <div className="px-4 pb-4">
+      <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
+        {/* 行数を固定せず、残りの高さいっぱいに広げる。
+            ウィンドウの大きさが変わっても余白が出ない。 */}
         <textarea
           value={text ?? ""}
           onChange={(e) => setText(e.target.value)}
           disabled={loading || busy}
           placeholder={loading ? "読み込み中…" : undefined}
           spellCheck={false}
-          rows={10}
-          className="w-full rounded border border-neutral-300 p-2 font-mono text-xs leading-relaxed disabled:opacity-50 dark:border-neutral-600 dark:bg-neutral-800"
+          className="min-h-32 w-full flex-1 resize-none rounded border border-neutral-300 p-2 font-mono text-xs leading-relaxed disabled:opacity-50 dark:border-neutral-600 dark:bg-neutral-800"
         />
-        <div className="mt-2 flex items-center gap-2">
+        <div className="mt-2 flex shrink-0 items-center gap-2">
           {/* 変更が無くても押せるようにする。押せない理由が画面から
               分からないと、壊れているのか仕様なのか区別できない。 */}
           <button
@@ -171,7 +174,7 @@ export default function SelfProfile() {
             !loading && <span className="text-xs text-neutral-400">保存済み</span>
           )}
         </div>
-        <p className="mt-2 text-[11px] text-neutral-400">
+        <p className="mt-2 shrink-0 text-[11px] text-neutral-400">
           この内容は返信生成のたびに LLM へ送られます。外部に出て困ることは
           書かないでください。
         </p>

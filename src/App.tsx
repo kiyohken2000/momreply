@@ -67,11 +67,13 @@ export default function App() {
         </nav>
       </header>
 
-      <main className="flex-1 overflow-y-auto">
+      {/* min-h-0 が無いと、中身の高さで main が伸びて
+          テキストエリアの flex-1 が効かない。 */}
+      <main className="min-h-0 flex-1 overflow-hidden">
         {tab === "self" && <SelfProfile />}
 
         {tab === "settings" && (
-          <section>
+          <section className="h-full overflow-y-auto">
             <h2 className="px-4 pt-4 pb-2 text-xs font-semibold tracking-wide text-neutral-500 uppercase dark:text-neutral-400">
               APIキー
             </h2>

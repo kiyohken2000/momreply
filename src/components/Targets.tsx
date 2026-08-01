@@ -5,11 +5,13 @@ import {
   listChatChoices,
   listTargets,
   removeTarget,
+  previewReply,
   rebuildFewshot,
   setLimit,
   updateTarget,
   LENGTH_PRESETS,
   type ChatChoice,
+  type Preview,
   type Limits,
   type TargetView,
 } from "../api";
@@ -38,6 +40,8 @@ export default function Targets() {
   const [picked, setPicked] = useState<string>("");
   const [newName, setNewName] = useState("");
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
+  const [preview, setPreview] = useState<Preview | null>(null);
+  const [previewing, setPreviewing] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -299,6 +303,47 @@ export default function Targets() {
                 </button>
               ))}
             </div>
+          </div>
+
+          {/* 試し生成。処理位置を動かさないので、何度押しても安全。 */}
+          <div className="mt-3">
+            <button
+              type="button"
+              disabled={previewing !== null}
+              onClick={() =>
+                void (async () => {
+                  setPreviewing(t.slug);
+                  setPreview(null);
+                  setError(null);
+                  try {
+                    setPreview(await previewReply(t.slug));
+                  } catch (e) {
+                    setError(String(e));
+                  } finally {
+                    setPreviewing(null);
+                  }
+                })()
+              }
+              className="rounded border border-neutral-300 px-2 py-1 text-xs disabled:opacity-40 dark:border-neutral-600"
+            >
+              {previewing === t.slug ? "生成中…" : "いまの設定で試す"}
+            </button>
+            <p className="mt-1 text-[10px] text-neutral-400">
+              直近の受信メッセージで返信案を作ります。送信も記録もせず、
+              処理位置も動かしません。
+            </p>
+
+            {preview && previewing === null && (
+              <div className="mt-2 rounded border border-neutral-300 p-2 dark:border-neutral-600">
+                <div className="text-[10px] text-neutral-400">相手</div>
+                <div className="text-[11px] whitespace-pre-wrap">{preview.incoming}</div>
+                <div className="mt-2 text-[10px] text-neutral-400">返信案（送信していません）</div>
+                <div className="text-[11px] whitespace-pre-wrap">{preview.draft}</div>
+                <div className="mt-1 text-[10px] text-neutral-400">
+                  {preview.model} / {(preview.latency_ms / 1000).toFixed(1)}秒
+                </div>
+              </div>
+            )}
           </div>
 
           {/* 自動送信は最後に置く。ここを入れると確認なしに本物が飛ぶ。 */}

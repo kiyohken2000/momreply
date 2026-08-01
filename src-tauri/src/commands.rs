@@ -646,6 +646,71 @@ fn build_fewshot(
     momreply_core::fewshot::rebuild(chat_db, store, target.id, &target.handles, 40, 2000)
 }
 
+#[derive(Serialize)]
+pub struct Preview {
+    incoming: String,
+    received_at: i64,
+    draft: String,
+    provider: String,
+    model: String,
+    latency_ms: u64,
+}
+
+/// 直近の受信メッセージで返信案を作ってみる。**試すためだけのもの。**
+///
+/// # なぜカーソルを動かさないか
+///
+/// 仕様書 6.1 は「コードで初期化をスキップできるようにしてはいけない」と
+/// している。`last_seen_rowid` を UI から巻き戻せるようにすると、
+/// 過去のメッセージが処理対象に戻る経路ができ、自動送信が有効な状態では
+/// 古い会話へ返信が飛びうる。
+///
+/// ここでは生成して返すだけで、`processed_messages` にも書かず、
+/// カーソルも触らず、送信もしない。試すのに必要なのはそれだけである。
+#[tauri::command]
+pub async fn preview_reply(slug: String) -> Result<Preview, String> {
+    tauri::async_runtime::spawn_blocking(move || preview_blocking(&slug))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn preview_blocking(slug: &str) -> Result<Preview, String> {
+    use momreply_core::pipeline::{draft_reply, LengthPreset};
+
+    let chat_db = open_chat_db()?;
+    let store = Store::open_default().map_err(|e| e.to_string())?;
+    let target = store
+        .target_by_slug(slug)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("'{slug}' は登録されていません"))?;
+
+    let message = momreply_core::imessage::recent_messages(&chat_db, &target.handles, 50)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|m| !m.is_from_me && m.skip.is_none() && m.body.is_some())
+        .next_back()
+        .ok_or("試せる受信メッセージが見つかりません")?;
+
+    let preset = LengthPreset::parse(&target.reply_preset).unwrap_or(LengthPreset::Mirror);
+    let draft = tauri::async_runtime::block_on(draft_reply(
+        &chat_db, &store, &target, &message, preset, None,
+    ))
+    .map_err(|e| e.to_string())?;
+
+    Ok(Preview {
+        incoming: message.body.unwrap_or_default(),
+        received_at: message.date.timestamp(),
+        draft: if draft.text.trim().is_empty() && !draft.unanswerable.is_empty() {
+            format!("（答える材料が足りません: {}）", draft.unanswerable.join(" / "))
+        } else {
+            draft.text
+        },
+        provider: draft.provider,
+        model: draft.model,
+        latency_ms: draft.latency_ms,
+    })
+}
+
 /// 文体の手本を作り直す。会話が増えたときに使う。
 #[tauri::command]
 pub fn rebuild_fewshot(slug: String) -> Result<usize, String> {

@@ -164,6 +164,23 @@ export type TargetView = {
   fewshot_count: number;
 };
 
+export type Preview = {
+  incoming: string;
+  received_at: number;
+  draft: string;
+  provider: string;
+  model: string;
+  latency_ms: number;
+};
+
+/**
+ * 直近の受信メッセージで返信案を作ってみる。
+ * 記録も送信もせず、処理位置も動かさない。
+ */
+export function previewReply(slug: string): Promise<Preview> {
+  return invoke("preview_reply", { slug });
+}
+
 /** 過去のやり取りから文体の手本を作り直す。 */
 export function rebuildFewshot(slug: string): Promise<number> {
   return invoke("rebuild_fewshot", { slug });

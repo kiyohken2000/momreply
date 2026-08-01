@@ -166,6 +166,30 @@ export function listTargets(): Promise<TargetView[]> {
   return invoke("list_targets");
 }
 
+export type ChatChoice = {
+  chat_identifier: string;
+  service: string;
+  display_name: string;
+  message_count: number;
+  last_message: string | null;
+  registered: boolean;
+};
+
+/** chat.db の会話一覧。本文は読まれない。 */
+export function listChatChoices(limit = 60): Promise<ChatChoice[]> {
+  return invoke("list_chat_choices", { limit });
+}
+
+/** 登録した時点より前のメッセージは処理対象にならない。 */
+export function addTarget(name: string, handles: string[]): Promise<string> {
+  return invoke("add_target", { name, handles });
+}
+
+/** 履歴・few-shot・質問もまとめて消える。 */
+export function removeTarget(slug: string): Promise<void> {
+  return invoke("remove_target", { slug });
+}
+
 export function updateTarget(
   slug: string,
   patch: { autoSend?: boolean; replyPreset?: string; replyMode?: string },

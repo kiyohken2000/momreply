@@ -557,6 +557,111 @@ pub fn list_targets() -> Result<Vec<TargetView>, String> {
         .collect())
 }
 
+#[derive(Serialize)]
+pub struct ChatChoice {
+    chat_identifier: String,
+    service: String,
+    display_name: String,
+    message_count: i64,
+    last_message: Option<String>,
+    /// 既に登録済みか。
+    registered: bool,
+}
+
+/// 会話相手の候補を出す。**本文は読まない**（仕様書 10.2-3）。
+#[tauri::command]
+pub fn list_chat_choices(limit: u32) -> Result<Vec<ChatChoice>, String> {
+    let chat_db = open_chat_db()?;
+    let store = Store::open_default().map_err(|e| e.to_string())?;
+    let taken: Vec<String> = store
+        .list_targets()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .flat_map(|t| t.handles)
+        .collect();
+
+    Ok(momreply_core::imessage::list_chats(&chat_db, limit)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|c| ChatChoice {
+            registered: taken.contains(&c.chat_identifier),
+            chat_identifier: c.chat_identifier,
+            service: c.service_name,
+            display_name: c.display_name,
+            message_count: c.message_count,
+            last_message: c.last_message.map(|d| d.format("%Y-%m-%d").to_string()),
+        })
+        .collect())
+}
+
+/// 相手を登録する。
+///
+/// **登録した時点より前のメッセージは処理対象にならない**（仕様書 6.1）。
+/// 保護は `Store::add_target` の内側にあり、ここから迂回できない。
+#[tauri::command]
+pub fn add_target(name: String, handles: Vec<String>) -> Result<String, String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("表示名を入力してください".into());
+    }
+    if handles.is_empty() {
+        return Err("会話を 1 つ以上選んでください".into());
+    }
+
+    let chat_db = open_chat_db()?;
+    let mut store = Store::open_default().map_err(|e| e.to_string())?;
+    let slug = unique_slug(&store, &handles[0]).map_err(|e| e.to_string())?;
+
+    let target = store
+        .add_target(
+            &chat_db,
+            momreply_core::store::NewTarget {
+                slug: slug.clone(),
+                display_name: name,
+                handles,
+            },
+        )
+        .map_err(|e| e.to_string())?;
+
+    Ok(format!(
+        "{} を登録しました。ここより前のメッセージ（ROWID {} まで）は処理されません。",
+        target.display_name,
+        target.last_seen_rowid.unwrap_or(0)
+    ))
+}
+
+/// ハンドルから重複しない slug を作る。プロファイルのファイル名になる。
+fn unique_slug(store: &Store, handle: &str) -> anyhow::Result<String> {
+    let base: String = handle
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .collect::<String>()
+        .trim_matches('-')
+        .chars()
+        .take(24)
+        .collect();
+    let base = if base.is_empty() { "target".to_string() } else { base };
+
+    for n in 0..100 {
+        let candidate = if n == 0 { base.clone() } else { format!("{base}-{n}") };
+        if store.target_by_slug(&candidate)?.is_none() {
+            return Ok(candidate);
+        }
+    }
+    anyhow::bail!("slug を決められない")
+}
+
+/// 相手を削除する。**履歴・few-shot・質問もまとめて消える。**
+#[tauri::command]
+pub fn remove_target(slug: String) -> Result<(), String> {
+    let store = Store::open_default().map_err(|e| e.to_string())?;
+    let target = store
+        .target_by_slug(&slug)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("'{slug}' は登録されていません"))?;
+    store.remove_target(target.id).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn update_target(
     slug: String,

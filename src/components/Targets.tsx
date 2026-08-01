@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  addTarget,
   getLimits,
+  listChatChoices,
   listTargets,
+  removeTarget,
   setLimit,
   updateTarget,
   LENGTH_PRESETS,
+  type ChatChoice,
   type Limits,
   type TargetView,
 } from "../api";
@@ -27,6 +31,12 @@ export default function Targets() {
   const [targets, setTargets] = useState<TargetView[] | null>(null);
   const [limits, setLimits] = useState<Limits | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [chats, setChats] = useState<ChatChoice[] | null>(null);
+  const [picked, setPicked] = useState<string>("");
+  const [newName, setNewName] = useState("");
+  const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -63,6 +73,38 @@ export default function Targets() {
     }
   }
 
+  async function openAdd() {
+    setAdding(true);
+    setError(null);
+    try {
+      setChats(await listChatChoices());
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function submitAdd() {
+    try {
+      setMessage(await addTarget(newName, [picked]));
+      setAdding(false);
+      setPicked("");
+      setNewName("");
+      await load();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function doRemove(slug: string) {
+    try {
+      await removeTarget(slug);
+      setConfirmRemove(null);
+      await load();
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
   if (targets === null) {
     return <p className="px-4 py-4 text-xs text-neutral-400">読み込み中…</p>;
   }
@@ -70,22 +112,124 @@ export default function Targets() {
   return (
     <div className="h-full overflow-y-auto pb-4">
       {error && <p className="px-4 pt-3 text-xs break-words text-red-600">{error}</p>}
+      {message && <p className="px-4 pt-3 text-xs break-words text-green-600">{message}</p>}
 
-      {targets.length === 0 && (
+      {targets.length === 0 && !adding && (
         <p className="px-4 py-4 text-xs text-neutral-400">
-          相手が登録されていません。CLI の <code>target add</code> で追加します。
+          返信する相手がまだ選ばれていません。
         </p>
       )}
+
+      {/* 相手の追加。会話一覧から選ぶ。手打ちさせない（仕様書 10.2-3）。 */}
+      <div className="border-b border-neutral-200 px-4 py-3 dark:border-neutral-700">
+        {!adding ? (
+          <button
+            type="button"
+            onClick={() => void openAdd()}
+            className="rounded border border-neutral-300 px-2 py-1 text-xs dark:border-neutral-600"
+          >
+            + 相手を追加
+          </button>
+        ) : (
+          <div>
+            <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
+              会話を選ぶ（本文は読み込みません）
+            </div>
+            <select
+              value={picked}
+              onChange={(e) => {
+                setPicked(e.target.value);
+                const c = chats?.find((x) => x.chat_identifier === e.target.value);
+                if (c && !newName) setNewName(c.display_name || c.chat_identifier);
+              }}
+              className="mt-1 w-full rounded border border-neutral-300 px-2 py-1 text-xs dark:border-neutral-600 dark:bg-neutral-800"
+            >
+              <option value="">選択してください</option>
+              {(chats ?? [])
+                .filter((c) => !c.registered)
+                .map((c) => (
+                  <option key={c.chat_identifier} value={c.chat_identifier}>
+                    {c.display_name || c.chat_identifier} ({c.message_count}件
+                    {c.last_message ? ` / ${c.last_message}` : ""})
+                  </option>
+                ))}
+            </select>
+
+            <input
+              type="text"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="表示名"
+              className="mt-2 w-full rounded border border-neutral-300 px-2 py-1 text-xs dark:border-neutral-600 dark:bg-neutral-800"
+            />
+
+            <p className="mt-1 text-[10px] text-neutral-400">
+              登録した時点より前のメッセージは処理されません。過去分に一斉返信する
+              事故を防ぐためです。
+            </p>
+
+            <div className="mt-2 flex gap-2">
+              <button
+                type="button"
+                disabled={!picked || !newName.trim()}
+                onClick={() => void submitAdd()}
+                className="rounded bg-blue-600 px-3 py-1 text-xs text-white disabled:opacity-40"
+              >
+                登録
+              </button>
+              <button
+                type="button"
+                onClick={() => setAdding(false)}
+                className="text-xs text-neutral-500 dark:text-neutral-400"
+              >
+                やめる
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
 
       {targets.map((t) => (
         <section
           key={t.slug}
           className="border-b border-neutral-200 px-4 py-3 dark:border-neutral-700"
         >
-          <div className="flex items-baseline justify-between">
+          <div className="flex items-baseline justify-between gap-2">
             <span className="text-sm font-medium">{t.display_name}</span>
-            <span className="text-[11px] text-neutral-400">{t.handles.join(", ")}</span>
+            <button
+              type="button"
+              onClick={() => setConfirmRemove(t.slug)}
+              className="shrink-0 text-[11px] text-neutral-400 hover:text-red-600"
+            >
+              削除
+            </button>
           </div>
+          <div className="text-[11px] break-all text-neutral-400">{t.handles.join(", ")}</div>
+
+          {confirmRemove === t.slug && (
+            <div className="mt-2 rounded border border-red-300 bg-red-50 p-2 dark:border-red-800 dark:bg-red-950/40">
+              <p className="text-[11px]">
+                {t.display_name} を削除すると、<strong>処理履歴・文体の手本・
+                質問への答えもまとめて消えます。</strong>元に戻せません。
+              </p>
+              <div className="mt-1 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => void doRemove(t.slug)}
+                  className="rounded bg-red-600 px-2 py-0.5 text-[11px] text-white"
+                >
+                  削除する
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmRemove(null)}
+                  className="text-[11px] text-neutral-500 dark:text-neutral-400"
+                >
+                  やめる
+                </button>
+              </div>
+            </div>
+          )}
 
           <div className="mt-2">
             <div className="text-[11px] text-neutral-500 dark:text-neutral-400">返信の方針</div>

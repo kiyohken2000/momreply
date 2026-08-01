@@ -1,0 +1,20 @@
+/target
+.DS_Store
+
+# --- 実データを絶対にコミットしない（CLAUDE.md ルール4） ---
+# app.db / chat.db のコピーは本文を含む。
+*.db
+*.db-wal
+*.db-shm
+/fixtures/
+
+# 自分プロファイル・相手プロファイルは個人の事実そのもの。
+# 実体は ~/Library/Application Support/ 配下だが、
+# 検証用にリポジトリへ置く事故を防ぐ。
+self.md
+/targets/
+config.toml
+
+# API キーは Keychain のみ。念のため。
+.env
+*.key

@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = ["crates/momreply-core", "crates/momreply-cli"]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.85"
+
+[workspace.dependencies]
+momreply-core = { path = "crates/momreply-core" }
+
+# imessage-database 4.2.0 は rusqlite = "=0.40.0" を固定ピンしている。
+# ここを揃えないと bundled SQLite が二重にリンクされる。
+imessage-database = "4.2.0"
+rusqlite = { version = "0.40", features = ["bundled"] }
+chrono = "0.4"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }

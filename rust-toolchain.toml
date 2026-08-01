@@ -1,0 +1,5 @@
+[toolchain]
+# libsqlite3-sys 0.38.x（imessage-database 4.2.0 → rusqlite 0.40 の依存）が
+# build script で cfg_select! を使っており、Rust 1.95 以降が要る。
+channel = "stable"
+components = ["rustfmt", "clippy"]

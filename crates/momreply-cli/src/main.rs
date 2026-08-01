@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use momreply_core::{
-    imessage,
+    imessage, profile, questions,
     store::{NewTarget, Store},
 };
 
@@ -44,6 +44,33 @@ enum Command {
     /// 返信対象の相手を管理する。
     #[command(subcommand)]
     Target(TargetCmd),
+    /// 相手からの質問と、それに対する自分の答えを管理する。
+    #[command(subcommand)]
+    Questions(QuestionCmd),
+}
+
+#[derive(Subcommand)]
+enum QuestionCmd {
+    /// 直近のメッセージから質問を抽出して溜める。
+    Scan {
+        #[arg(long)]
+        slug: String,
+        /// 遡る件数。
+        #[arg(long, default_value_t = 100)]
+        limit: u32,
+    },
+    /// まだ答えていない質問を並べる。
+    List {
+        #[arg(long)]
+        slug: String,
+    },
+    /// 質問に答える。答えは self.md にも追記され、次からは聞かれない。
+    Answer {
+        #[arg(long)]
+        id: i64,
+        #[arg(long)]
+        answer: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -91,7 +118,88 @@ fn main() -> Result<()> {
             include_skipped,
         } => cmd_messages(&chat_db, &handle, limit, include_skipped),
         Command::Target(cmd) => cmd_target(&chat_db, cmd),
+        Command::Questions(cmd) => cmd_questions(&chat_db, cmd),
     }
+}
+
+fn cmd_questions(chat_db: &rusqlite::Connection, cmd: QuestionCmd) -> Result<()> {
+    let store = Store::open_default()?;
+
+    match cmd {
+        QuestionCmd::Scan { slug, limit } => {
+            let target = store
+                .target_by_slug(&slug)?
+                .with_context(|| format!("'{slug}' は登録されていない"))?;
+
+            let messages = imessage::recent_messages(chat_db, &target.handles, limit)?;
+            let mut scanned = 0usize;
+            let mut added = 0usize;
+            let mut already_known = 0usize;
+
+            for m in &messages {
+                // 自分の発言と除外対象は見ない。
+                if m.is_from_me || m.skip.is_some() {
+                    continue;
+                }
+                let Some(body) = &m.body else { continue };
+
+                let found = questions::extract(body);
+                if found.is_empty() {
+                    continue;
+                }
+                scanned += found.len();
+
+                for q in &found {
+                    if store.known_answer(target.id, q)?.is_some() {
+                        already_known += 1;
+                    }
+                }
+                added += store.record_questions(target.id, m.rowid, &found)?;
+            }
+
+            println!(
+                "{} 件のメッセージから質問 {} 件を検出",
+                messages.len(),
+                scanned
+            );
+            println!("  新規に記録: {added} 件");
+            println!("  既に答えがある: {already_known} 件");
+            if added > 0 {
+                println!();
+                println!("`momreply-cli questions list --slug {slug}` で確認して答える。");
+            }
+        }
+
+        QuestionCmd::List { slug } => {
+            let target = store
+                .target_by_slug(&slug)?
+                .with_context(|| format!("'{slug}' は登録されていない"))?;
+            let pending = store.unanswered_questions(target.id)?;
+
+            if pending.is_empty() {
+                println!("未回答の質問はありません。");
+                return Ok(());
+            }
+            println!("未回答 {} 件:", pending.len());
+            for q in &pending {
+                println!("  #{:<4} {}", q.id, q.question);
+            }
+            println!();
+            println!("答える: momreply-cli questions answer --id <ID> --answer \"...\"");
+        }
+
+        QuestionCmd::Answer { id, answer } => {
+            let q = store.answer_question(id, &answer)?;
+            profile::append_fact(&q.question, &answer)?;
+            println!("記録しました。");
+            println!("  質問: {}", q.question);
+            println!("  答え: {answer}");
+            println!();
+            println!("self.md: {}", momreply_core::paths::self_profile()?.display());
+            println!("次から同じ質問が来ても、あなたに聞かずに答えられます。");
+        }
+    }
+    Ok(())
 }
 
 fn cmd_chats(conn: &rusqlite::Connection, limit: u32) -> Result<()> {

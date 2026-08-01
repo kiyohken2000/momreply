@@ -5,4 +5,6 @@
 
 pub mod imessage;
 pub mod paths;
+pub mod profile;
+pub mod questions;
 pub mod store;

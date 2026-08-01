@@ -13,7 +13,7 @@ use rusqlite::{Connection, OptionalExtension};
 use crate::imessage;
 
 /// スキーマバージョン。`PRAGMA user_version` で管理する。
-const SCHEMA_VERSION: i32 = 1;
+const SCHEMA_VERSION: i32 = 2;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS targets (
@@ -111,13 +111,16 @@ CREATE TABLE IF NOT EXISTS pending_questions (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   target_id   INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
   chat_rowid  INTEGER,
-  question    TEXT    NOT NULL,
+  question    TEXT    NOT NULL,      -- 原文のまま
+  norm_key    TEXT    NOT NULL DEFAULT '',  -- 表記ゆれを吸収した重複判定キー
   answer      TEXT,
   answered_at INTEGER,
   created_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_pending_unanswered
   ON pending_questions(target_id, answered_at);
+-- norm_key のインデックスは migrate() 側で張る。
+-- v1 の app.db には列が無く、ALTER TABLE より先にここを実行すると落ちる。
 
 CREATE TABLE IF NOT EXISTS kv (
   key   TEXT PRIMARY KEY,
@@ -136,6 +139,17 @@ pub struct Target {
     pub reply_preset: String,
     pub handles: Vec<String>,
     pub last_seen_rowid: Option<i64>,
+}
+
+/// 答える材料がまだ無い質問。
+#[derive(Debug, Clone)]
+pub struct PendingQuestion {
+    pub id: i64,
+    /// 原文のまま。人間に見せるのはこちら。
+    pub question: String,
+    pub answer: Option<String>,
+    pub chat_rowid: Option<i64>,
+    pub created_at: i64,
 }
 
 /// 新規登録の入力。
@@ -188,9 +202,36 @@ impl Store {
             );
         }
         self.conn.execute_batch(SCHEMA)?;
+
+        // v1 で作られた app.db には norm_key が無い。CREATE TABLE IF NOT EXISTS
+        // では追加されないので明示的に足す。インデックスは列が揃ってから張る。
+        if !self.has_column("pending_questions", "norm_key")? {
+            self.conn.execute(
+                "ALTER TABLE pending_questions ADD COLUMN norm_key TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
+        self.conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_pending_key
+               ON pending_questions(target_id, norm_key);",
+        )?;
+
         self.conn
             .pragma_update(None, "user_version", SCHEMA_VERSION)?;
         Ok(())
+    }
+
+    fn has_column(&self, table: &str, column: &str) -> Result<bool> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!("PRAGMA table_info({table})"))?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            if row.get::<_, String>(1)? == column {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// 相手を登録する。
@@ -353,6 +394,119 @@ impl Store {
         self.conn
             .execute("DELETE FROM targets WHERE id = ?1", [target_id])?;
         Ok(())
+    }
+
+    // MARK: 未回答質問（self.md の材料集め）
+
+    /// 抽出した質問を記録する。**既に答えたもの・未回答で溜まっているものは
+    /// 入れない**。同じことを二度人間に聞かないため。
+    ///
+    /// 戻り値は新しく積まれた質問の件数。
+    pub fn record_questions(
+        &self,
+        target_id: i64,
+        chat_rowid: i64,
+        questions: &[String],
+    ) -> Result<usize> {
+        let now = now_unix();
+        let mut added = 0;
+        for q in questions {
+            let key = crate::questions::normalize(q);
+            if self.find_question_by_key(target_id, &key)?.is_some() {
+                continue;
+            }
+            self.conn.execute(
+                "INSERT INTO pending_questions (target_id, chat_rowid, question, norm_key, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                (target_id, chat_rowid, q, &key, now),
+            )?;
+            added += 1;
+        }
+        Ok(added)
+    }
+
+    /// 表記ゆれを吸収したキーで既存の質問を引く。
+    fn find_question_by_key(&self, target_id: i64, key: &str) -> Result<Option<PendingQuestion>> {
+        self.conn
+            .query_row(
+                "SELECT id, question, answer, chat_rowid, created_at
+                 FROM pending_questions
+                 WHERE target_id = ?1 AND norm_key = ?2
+                 ORDER BY id LIMIT 1",
+                (target_id, key),
+                |row| {
+                    Ok(PendingQuestion {
+                        id: row.get(0)?,
+                        question: row.get(1)?,
+                        answer: row.get(2)?,
+                        chat_rowid: row.get(3)?,
+                        created_at: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// 既に答えを持っている質問なら、その答えを返す。
+    ///
+    /// 生成の前に呼ぶ。答えがあれば人間に聞かずに生成へ進める。
+    pub fn known_answer(&self, target_id: i64, question: &str) -> Result<Option<String>> {
+        let key = crate::questions::normalize(question);
+        Ok(self
+            .find_question_by_key(target_id, &key)?
+            .and_then(|q| q.answer))
+    }
+
+    pub fn unanswered_questions(&self, target_id: i64) -> Result<Vec<PendingQuestion>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, question, answer, chat_rowid, created_at
+             FROM pending_questions
+             WHERE target_id = ?1 AND answer IS NULL
+             ORDER BY id",
+        )?;
+        let rows = stmt.query_map([target_id], |row| {
+            Ok(PendingQuestion {
+                id: row.get(0)?,
+                question: row.get(1)?,
+                answer: row.get(2)?,
+                chat_rowid: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// 質問に答える。app.db に記録し、`self.md` にも事実として追記する。
+    pub fn answer_question(&self, question_id: i64, answer: &str) -> Result<PendingQuestion> {
+        let q = self
+            .conn
+            .query_row(
+                "SELECT id, question, answer, chat_rowid, created_at
+                 FROM pending_questions WHERE id = ?1",
+                [question_id],
+                |row| {
+                    Ok(PendingQuestion {
+                        id: row.get(0)?,
+                        question: row.get(1)?,
+                        answer: row.get(2)?,
+                        chat_rowid: row.get(3)?,
+                        created_at: row.get(4)?,
+                    })
+                },
+            )
+            .optional()?
+            .with_context(|| format!("質問 #{question_id} が無い"))?;
+
+        self.conn.execute(
+            "UPDATE pending_questions SET answer = ?2, answered_at = ?3 WHERE id = ?1",
+            (question_id, answer, now_unix()),
+        )?;
+
+        Ok(PendingQuestion {
+            answer: Some(answer.to_string()),
+            ..q
+        })
     }
 
     fn handles_of(&self, target_id: i64) -> Result<Vec<String>> {

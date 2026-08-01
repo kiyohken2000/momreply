@@ -160,7 +160,14 @@ export type TargetView = {
   reply_preset: string;
   /** precise = 具体的に答える / vague = 曖昧に返して人に聞かない */
   reply_mode: string;
+  /** 文体の手本の数。0 だとその人らしさが出ない。 */
+  fewshot_count: number;
 };
+
+/** 過去のやり取りから文体の手本を作り直す。 */
+export function rebuildFewshot(slug: string): Promise<number> {
+  return invoke("rebuild_fewshot", { slug });
+}
 
 export function listTargets(): Promise<TargetView[]> {
   return invoke("list_targets");

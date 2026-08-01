@@ -536,6 +536,8 @@ pub struct TargetView {
     reply_preset: String,
     /// `precise` | `vague`
     reply_mode: String,
+    /// 文体の手本の数。0 だとその人らしさが出ない。
+    fewshot_count: usize,
 }
 
 #[tauri::command]
@@ -546,6 +548,7 @@ pub fn list_targets() -> Result<Vec<TargetView>, String> {
         .map_err(|e| e.to_string())?
         .into_iter()
         .map(|t| TargetView {
+            fewshot_count: store.fewshot(t.id).map(|v| v.len()).unwrap_or(0),
             slug: t.slug,
             display_name: t.display_name,
             handles: t.handles,
@@ -623,11 +626,36 @@ pub fn add_target(name: String, handles: Vec<String>) -> Result<String, String> 
         )
         .map_err(|e| e.to_string())?;
 
+    // 文体の手本をここで作る（仕様書 10.2-6）。
+    // 無いまま生成すると、その人らしさが一切出ない。
+    let pairs = build_fewshot(&chat_db, &store, &target).unwrap_or(0);
+
     Ok(format!(
-        "{} を登録しました。ここより前のメッセージ（ROWID {} まで）は処理されません。",
-        target.display_name,
-        target.last_seen_rowid.unwrap_or(0)
+        "{} を登録しました。ここより前のメッセージは処理されません。\n\
+         文体の手本を {pairs} 組作りました。",
+        target.display_name
     ))
+}
+
+/// 過去のやり取りから文体の手本を作る。
+fn build_fewshot(
+    chat_db: &rusqlite::Connection,
+    store: &Store,
+    target: &momreply_core::store::Target,
+) -> anyhow::Result<usize> {
+    momreply_core::fewshot::rebuild(chat_db, store, target.id, &target.handles, 40, 2000)
+}
+
+/// 文体の手本を作り直す。会話が増えたときに使う。
+#[tauri::command]
+pub fn rebuild_fewshot(slug: String) -> Result<usize, String> {
+    let chat_db = open_chat_db()?;
+    let store = Store::open_default().map_err(|e| e.to_string())?;
+    let target = store
+        .target_by_slug(&slug)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("'{slug}' は登録されていません"))?;
+    build_fewshot(&chat_db, &store, &target).map_err(|e| e.to_string())
 }
 
 /// ハンドルから重複しない slug を作る。プロファイルのファイル名になる。

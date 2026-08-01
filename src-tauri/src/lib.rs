@@ -46,6 +46,7 @@ pub fn run() {
             commands::list_chat_choices,
             commands::add_target,
             commands::remove_target,
+            commands::rebuild_fewshot,
             commands::update_target,
             commands::get_limits,
             commands::set_limit,

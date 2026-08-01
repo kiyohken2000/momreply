@@ -5,6 +5,7 @@ import {
   listChatChoices,
   listTargets,
   removeTarget,
+  rebuildFewshot,
   setLimit,
   updateTarget,
   LENGTH_PRESETS,
@@ -205,6 +206,35 @@ export default function Targets() {
             </button>
           </div>
           <div className="text-[11px] break-all text-neutral-400">{t.handles.join(", ")}</div>
+
+          {/* 手本が無いと文体が再現されない。0 のときは目立たせる。 */}
+          <div className="mt-1 flex items-center gap-2">
+            <span
+              className={
+                "text-[11px] " + (t.fewshot_count === 0 ? "text-amber-600" : "text-neutral-400")
+              }
+            >
+              文体の手本 {t.fewshot_count} 組
+              {t.fewshot_count === 0 && "（このままだと文体が再現されません）"}
+            </span>
+            <button
+              type="button"
+              onClick={() =>
+                void (async () => {
+                  try {
+                    const n = await rebuildFewshot(t.slug);
+                    setMessage(`文体の手本を ${n} 組作りました。`);
+                    await load();
+                  } catch (e) {
+                    setError(String(e));
+                  }
+                })()
+              }
+              className="rounded border border-neutral-300 px-2 py-0.5 text-[10px] dark:border-neutral-600"
+            >
+              作り直す
+            </button>
+          </div>
 
           {confirmRemove === t.slug && (
             <div className="mt-2 rounded border border-red-300 bg-red-50 p-2 dark:border-red-800 dark:bg-red-950/40">

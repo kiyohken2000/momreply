@@ -315,19 +315,9 @@ export default function Targets() {
             value={limits.max_per_day}
             onChange={(v) => void limit("max_per_day", v)}
           />
-          <LimitRow
-            label="月の上限（USD）"
-            hint="超えると生成も自動送信も止まります。"
-            value={limits.monthly_hard_limit_usd}
-            step={0.5}
-            onChange={(v) => void limit("monthly_hard_limit_usd", v)}
-          />
-
-          <p className="mt-2 text-[11px] text-neutral-500 dark:text-neutral-400">
-            今月の推定コスト: ${limits.month_cost_usd.toFixed(2)}
-            <span className="block text-[10px] text-neutral-400">
-              単価が未設定のモデルは 0 として数えています。
-            </span>
+          <p className="mt-3 text-[10px] text-neutral-400">
+            金額での歯止めは効きません（モデルの単価を登録していないため）。
+            放置して使う場合、上の 3 つが実質的な上限になります。
           </p>
         </section>
       )}

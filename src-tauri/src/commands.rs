@@ -707,21 +707,12 @@ pub struct LimitsView {
     stale_threshold_minutes: u32,
     monthly_soft_limit_usd: f64,
     monthly_hard_limit_usd: f64,
-    /// 当月の推定コスト。単価未設定のモデルは 0 として数える。
-    month_cost_usd: f64,
 }
 
 #[tauri::command]
 pub fn get_limits() -> Result<LimitsView, String> {
     let store = Store::open_default().map_err(|e| e.to_string())?;
     let l = momreply_core::pipeline::Limits::load(&store).map_err(|e| e.to_string())?;
-
-    // 相手ごとの合計。放置運用で効いてくるのはここ。
-    let mut cost = 0.0;
-    for t in store.list_targets().map_err(|e| e.to_string())? {
-        cost += store.month_cost_usd(t.id).map_err(|e| e.to_string())?;
-    }
-
     Ok(LimitsView {
         max_consecutive_auto: l.max_consecutive_auto,
         max_per_hour: l.max_per_hour,
@@ -729,7 +720,6 @@ pub fn get_limits() -> Result<LimitsView, String> {
         stale_threshold_minutes: (l.stale_threshold.as_secs() / 60) as u32,
         monthly_soft_limit_usd: l.monthly_soft_limit_usd,
         monthly_hard_limit_usd: l.monthly_hard_limit_usd,
-        month_cost_usd: cost,
     })
 }
 

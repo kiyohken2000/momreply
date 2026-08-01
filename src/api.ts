@@ -209,7 +209,6 @@ export type Limits = {
   stale_threshold_minutes: number;
   monthly_soft_limit_usd: number;
   monthly_hard_limit_usd: number;
-  month_cost_usd: number;
 };
 
 export function getLimits(): Promise<Limits> {

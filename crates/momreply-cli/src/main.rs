@@ -50,6 +50,19 @@ enum Command {
     /// 相手からの質問と、それに対する自分の答えを管理する。
     #[command(subcommand)]
     Questions(QuestionCmd),
+    /// 新着を検知して処理し続ける（仕様書 6.1）。
+    ///
+    /// 既定はドライラン。実際に送るには --live を明示する。
+    Watch {
+        #[arg(long)]
+        slug: String,
+        /// **実際に送信する。** 指定しない限り送らない。
+        #[arg(long)]
+        live: bool,
+        /// 1 回だけ確認して終了する。
+        #[arg(long)]
+        once: bool,
+    },
     /// 送信経路の疎通確認。**自分のアカウント宛にしか送らない。**
     SendTest {
         /// 宛先。この Mac の iMessage 送信アカウントと一致する必要がある。
@@ -187,6 +200,9 @@ async fn main() -> Result<()> {
         } => cmd_messages(&chat_db, &handle, limit, include_skipped),
         Command::Target(cmd) => cmd_target(&chat_db, cmd),
         Command::Questions(cmd) => cmd_questions(&chat_db, cmd),
+        Command::Watch { slug, live, once } => {
+            cmd_watch(&chat_db, &chat_db_path, &slug, live, once).await
+        }
         Command::SendTest { to, text } => cmd_send_test(&chat_db, &to, &text),
         Command::Config { primary, user_name } => cmd_config(primary, user_name),
         Command::Fewshot { slug, limit, scan } => cmd_fewshot(&chat_db, &slug, limit, scan),
@@ -196,6 +212,118 @@ async fn main() -> Result<()> {
             length,
             redo,
         } => cmd_generate(&chat_db, &slug, rowid, length.as_deref(), redo).await,
+    }
+}
+
+async fn cmd_watch(
+    chat_db: &rusqlite::Connection,
+    chat_db_path: &std::path::Path,
+    slug: &str,
+    live: bool,
+    once: bool,
+) -> Result<()> {
+    let store = Store::open_default()?;
+    let target = store
+        .target_by_slug(slug)?
+        .with_context(|| format!("'{slug}' は登録されていない"))?;
+    let preset = LengthPreset::parse(&target.reply_preset)
+        .with_context(|| format!("不明な長さ指定: {}", target.reply_preset))?;
+
+    let options = pipeline::Options {
+        limits: pipeline::Limits::default(),
+        preset,
+        // 明示しない限り送らない。
+        dry_run: !live,
+        redo_instruction: None,
+        session_gap: std::time::Duration::from_secs(180 * 60),
+    };
+
+    println!("監視: {} ({})", target.display_name, target.slug);
+    println!("  ハンドル: {}", target.handles.join(", "));
+    println!("  長さ: {}", target.reply_preset);
+    if live {
+        println!("  **実送信モード**（--live）");
+    } else {
+        println!("  ドライラン（送信しません）");
+    }
+    println!();
+
+    let config = imessage::watcher::Config::default();
+    let ticker = imessage::watcher::Ticker::new(chat_db_path, config.clone())?;
+    let mut last_poll: Option<i64> = None;
+
+    loop {
+        let now = chrono::Local::now().timestamp();
+        let gap = imessage::gap_detected(last_poll, now, config.wake_gap_threshold);
+        if gap {
+            println!("[{}] 時間が空いたので、溜まった分は最新1件だけ処理します",
+                chrono::Local::now().format("%H:%M:%S"));
+        }
+        last_poll = Some(now);
+
+        let runtime = store.target_runtime(target.id)?;
+        let after = runtime.last_seen_rowid.unwrap_or(0);
+        let new = imessage::messages_after(chat_db, &target.handles, after)?;
+        let plan = imessage::plan(new, gap);
+
+        for (m, reason) in &plan.passed {
+            if *reason != imessage::Passed::NotApplicable {
+                println!(
+                    "  見送り #{} ({}) {}",
+                    m.rowid,
+                    reason.label(),
+                    m.body.as_deref().unwrap_or("").replace('\n', " ")
+                );
+                store.record_processed(
+                    target.id, m.rowid, &m.chat_identifier, m.date.timestamp(),
+                    m.body.as_deref(), "skipped", Some(reason.label()), None, None, None,
+                )?;
+            }
+        }
+
+        if let Some(message) = plan.actionable {
+            println!(
+                "[{}] 新着 #{} {}",
+                message.date.format("%H:%M:%S"),
+                message.rowid,
+                message.body.as_deref().unwrap_or("").replace('\n', " ")
+            );
+            match pipeline::process(chat_db, &store, &target, &message, &options).await? {
+                pipeline::Outcome::Sent { rowid } => {
+                    println!("  送信しました（chat.db ROWID {rowid}）")
+                }
+                pipeline::Outcome::SentUnverified => {
+                    println!("  送信したが確認できませんでした。再送はしません")
+                }
+                pipeline::Outcome::Held(reason) => {
+                    let draft = store.previous_draft(message.rowid)?.unwrap_or_default();
+                    println!("  送信せず確認へ（{}）", reason.label());
+                    println!("  返信案: {draft}");
+                }
+                pipeline::Outcome::Skipped(reason) => {
+                    println!("  スキップ（{}）", reason.label())
+                }
+                pipeline::Outcome::NeedsAnswer(qs) => {
+                    println!("  答える材料がありません:");
+                    for q in qs {
+                        println!("    ・{q}");
+                    }
+                }
+                pipeline::Outcome::Failed(why) => println!("  失敗: {why}"),
+            }
+        }
+
+        if let Some(rowid) = plan.next_seen_rowid {
+            store.set_last_seen_rowid(target.id, rowid)?;
+        }
+
+        if once {
+            return Ok(());
+        }
+        match ticker.wait() {
+            imessage::watcher::Tick::FileChanged => {}
+            imessage::watcher::Tick::Interval => {}
+        }
     }
 }
 

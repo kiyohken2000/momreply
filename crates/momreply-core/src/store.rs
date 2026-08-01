@@ -226,6 +226,14 @@ pub struct GenerationRecord<'a> {
     pub error: Option<&'a str>,
 }
 
+/// 相手ごとの実行状態。
+#[derive(Debug, Clone)]
+pub struct TargetRuntime {
+    pub last_seen_rowid: Option<i64>,
+    pub consecutive_auto: u32,
+    pub last_sent_at: Option<i64>,
+}
+
 /// 新規登録の入力。
 #[derive(Debug, Clone)]
 pub struct NewTarget {
@@ -803,6 +811,132 @@ impl Store {
                 model,
                 now,
             ),
+        )?;
+        Ok(())
+    }
+
+    // MARK: ガードに渡す集計
+
+    /// 直近 `secs` 秒に自動送信した件数。
+    pub fn sent_within(&self, target_id: i64, secs: i64) -> Result<u32> {
+        let since = now_unix() - secs;
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM processed_messages
+             WHERE target_id = ?1 AND status = 'sent' AND sent_at >= ?2",
+            (target_id, since),
+            |r| r.get(0),
+        )?;
+        Ok(n as u32)
+    }
+
+    /// 当月の推定コスト（USD）。
+    ///
+    /// 単価は kv に `pricing.<provider>:<model>.input` / `.output` の形で
+    /// 100 万トークンあたりの USD で入れる。**単価が無いモデルは 0 として
+    /// 扱う**（仕様書 6.4.5.2）。0 のまま上限に達しないのは想定どおりで、
+    /// UI 側で「単価未設定」と示す必要がある。
+    pub fn month_cost_usd(&self, target_id: i64) -> Result<f64> {
+        use chrono::{Datelike, TimeZone};
+        let month_start = chrono::Local::now()
+            .date_naive()
+            .with_day(1)
+            .and_then(|d| d.and_hms_opt(0, 0, 0))
+            .and_then(|dt| chrono::Local.from_local_datetime(&dt).single())
+            .map(|dt| dt.timestamp())
+            .unwrap_or(0);
+
+        let mut stmt = self.conn.prepare(
+            "SELECT provider, model, SUM(COALESCE(input_tokens,0)), SUM(COALESCE(output_tokens,0))
+             FROM generation_log
+             WHERE target_id = ?1 AND created_at >= ?2 AND provider IS NOT NULL
+             GROUP BY provider, model",
+        )?;
+        let rows = stmt.query_map((target_id, month_start), |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
+            ))
+        })?;
+
+        let mut total = 0.0;
+        for row in rows {
+            let (provider, model, input, output) = row?;
+            let key = format!("pricing.{provider}:{model}");
+            let unit_in = self.pricing(&format!("{key}.input"))?;
+            let unit_out = self.pricing(&format!("{key}.output"))?;
+            total += (input as f64 / 1_000_000.0) * unit_in;
+            total += (output as f64 / 1_000_000.0) * unit_out;
+        }
+        Ok(total)
+    }
+
+    fn pricing(&self, key: &str) -> Result<f64> {
+        Ok(self
+            .get_kv(key)?
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .unwrap_or(0.0))
+    }
+
+    /// 相手ごとの実行状態。
+    pub fn target_runtime(&self, target_id: i64) -> Result<TargetRuntime> {
+        self.conn
+            .query_row(
+                "SELECT last_seen_rowid, consecutive_auto_count, last_sent_at
+                 FROM target_state WHERE target_id = ?1",
+                [target_id],
+                |r| {
+                    Ok(TargetRuntime {
+                        last_seen_rowid: r.get(0)?,
+                        consecutive_auto: r.get::<_, i64>(1)? as u32,
+                        last_sent_at: r.get(2)?,
+                    })
+                },
+            )
+            .optional()?
+            .context("target_state が無い。ターゲット登録が壊れている")
+    }
+
+    /// 自動送信に成功したときに呼ぶ（仕様書 6.4.5.1）。
+    pub fn note_auto_sent(&self, target_id: i64, at: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE target_state
+             SET consecutive_auto_count = consecutive_auto_count + 1, last_sent_at = ?2
+             WHERE target_id = ?1",
+            (target_id, at),
+        )?;
+        Ok(())
+    }
+
+    /// 人が介入したときに呼ぶ。連続カウンタを 0 に戻す（仕様書 6.4.5.1）。
+    pub fn reset_consecutive(&self, target_id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE target_state SET consecutive_auto_count = 0 WHERE target_id = ?1",
+            [target_id],
+        )?;
+        Ok(())
+    }
+
+    /// 送信できたことを記録する。
+    pub fn mark_sent(&self, chat_rowid: i64, final_text: &str, sent_rowid: Option<i64>) -> Result<()> {
+        let now = now_unix();
+        self.conn.execute(
+            "UPDATE processed_messages
+             SET status = 'sent', final_text = ?2, sent_at = ?3, sent_rowid = ?4, updated_at = ?3
+             WHERE chat_rowid = ?1",
+            (chat_rowid, final_text, now, sent_rowid),
+        )?;
+        Ok(())
+    }
+
+    pub fn mark_failed(&self, chat_rowid: i64, reason: &str) -> Result<()> {
+        let now = now_unix();
+        self.conn.execute(
+            "UPDATE processed_messages
+             SET status = 'failed', skip_reason = ?2, updated_at = ?3
+             WHERE chat_rowid = ?1",
+            (chat_rowid, reason, now),
         )?;
         Ok(())
     }

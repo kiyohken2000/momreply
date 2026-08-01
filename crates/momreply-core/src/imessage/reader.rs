@@ -143,6 +143,29 @@ pub fn messages_after(
     collect(conn, &sql, params.as_slice())
 }
 
+/// ROWID を指定して 1 件だけ読み直す。
+///
+/// 送信の直前に、生成中に相手が送信取り消しをしていないか確かめるのに使う
+/// （仕様書 5.1.1）。取り消された話に返信すると噛み合わない。
+pub fn message_by_rowid(
+    conn: &Connection,
+    handles: &[String],
+    rowid: i64,
+) -> Result<Option<Message>> {
+    if handles.is_empty() {
+        return Ok(None);
+    }
+    let sql = format!(
+        "SELECT {SELECT_COLUMNS} WHERE c.chat_identifier IN ({}) AND m.ROWID = ?",
+        placeholders(handles.len())
+    );
+    let mut params: Vec<&dyn rusqlite::ToSql> =
+        handles.iter().map(|h| h as &dyn rusqlite::ToSql).collect();
+    params.push(&rowid);
+
+    Ok(collect(conn, &sql, params.as_slice())?.into_iter().next())
+}
+
 /// 指定ハンドル群の現在の最大 ROWID。
 ///
 /// **バックログ保護（仕様書 6.1）の要**。ターゲット登録時にこの値を

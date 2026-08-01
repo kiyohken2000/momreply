@@ -5,10 +5,12 @@
 pub mod generate;
 pub mod guards;
 pub mod prompt;
+pub mod run;
 
 pub use generate::{draft_reply, Draft, LengthPreset, Redo};
 pub use guards::{evaluate, HoldReason, Limits, Verdict};
 pub use prompt::{Context, Retry};
+pub use run::{process, Options, Outcome};
 
 /// 生成結果の後処理の結末（仕様書 6.2.1）。
 #[derive(Debug, Clone, PartialEq, Eq)]

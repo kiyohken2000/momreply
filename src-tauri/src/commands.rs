@@ -15,6 +15,38 @@ fn parse_provider(provider: &str) -> Result<Provider, String> {
     Provider::parse(provider).ok_or_else(|| format!("不明なプロバイダ: {provider}"))
 }
 
+/// 検証結果の保存先。
+///
+/// `credentials::status()` は Keychain を見るだけなので、疎通テストに
+/// 成功したかどうかは分からない。ここに残さないと、再起動のたびに
+/// 全プロバイダが「未検証」に戻る。
+fn verified_key(provider: Provider) -> String {
+    format!("key_verified_at.{}", provider.id())
+}
+
+fn load_verification(status: &mut KeyStatus, provider: Provider) {
+    if !status.configured {
+        return;
+    }
+    let Ok(store) = Store::open_default() else { return };
+    if let Ok(Some(at)) = store.get_kv(&verified_key(provider)) {
+        if let Ok(ts) = at.parse::<i64>() {
+            status.verified = true;
+            status.last_verified_at = Some(ts);
+        }
+    }
+}
+
+/// 検証状態を書き換える。キーを差し替えたり消したりしたときは必ず消す。
+fn save_verification(provider: Provider, at: Option<i64>) {
+    let Ok(store) = Store::open_default() else { return };
+    let key = verified_key(provider);
+    let _ = match at {
+        Some(ts) => store.set_kv(&key, &ts.to_string()),
+        None => store.set_kv(&key, ""),
+    };
+}
+
 /// 設定中のモデル名を読む。未設定なら既定値。
 fn model_for(provider: Provider) -> Option<String> {
     let store = Store::open_default().ok()?;
@@ -40,13 +72,17 @@ async fn verify_into_status(provider: Provider, mut status: KeyStatus) -> KeySta
 
     match llm.verify().await {
         Ok(()) => {
+            let at = now_unix();
             status.verified = true;
-            status.last_verified_at = Some(now_unix());
+            status.last_verified_at = Some(at);
             status.error = None;
+            // 次回以降の起動でも検証済みとして扱えるように残す。
+            save_verification(provider, Some(at));
         }
         Err(LlmError::Auth(_)) => {
             status.verified = false;
             status.error = Some("キーが正しくありません".into());
+            save_verification(provider, None);
         }
         Err(err @ LlmError::RateLimit(_)) => {
             // 429 は「投げすぎ」とは限らない。OpenAI は残高不足でも 429 に
@@ -54,12 +90,14 @@ async fn verify_into_status(provider: Provider, mut status: KeyStatus) -> KeySta
             // 待てば直ると誤解させてしまう。
             status.verified = false;
             status.error = Some(format!("保存済み（未検証・429）: {}", brief(&err)));
+            save_verification(provider, None);
         }
         Err(other) => {
             // モデル名が違う場合はここに来る。API の返答をそのまま見せないと
             // 何を直せばよいか分からない。キーは本文に載らない。
             status.verified = false;
             status.error = Some(format!("保存済み（未検証）: {}", brief(&other)));
+            save_verification(provider, None);
         }
     }
     status
@@ -86,6 +124,10 @@ fn now_unix() -> i64 {
 #[tauri::command]
 pub async fn set_api_key(provider: String, key: String) -> Result<KeyStatus, String> {
     let p = parse_provider(&provider)?;
+    // 先に検証状態を落とす。新しいキーを入れた瞬間、前のキーの
+    // 検証結果は無効になる。ここで消さないと、検証前に「検証済み」と
+    // 表示される隙間ができる。
+    save_verification(p, None);
     credentials::set(p, &key).map_err(|e| e.to_string())?;
     let status = credentials::status(p);
     Ok(verify_into_status(p, status).await)
@@ -94,20 +136,29 @@ pub async fn set_api_key(provider: String, key: String) -> Result<KeyStatus, Str
 #[tauri::command]
 pub fn get_key_status(provider: String) -> Result<KeyStatus, String> {
     let p = parse_provider(&provider)?;
-    Ok(credentials::status(p))
+    let mut status = credentials::status(p);
+    load_verification(&mut status, p);
+    Ok(status)
 }
 
 #[tauri::command]
 pub fn list_key_statuses() -> Vec<KeyStatus> {
     Provider::with_keys()
         .into_iter()
-        .map(credentials::status)
+        .map(|p| {
+            let mut status = credentials::status(p);
+            load_verification(&mut status, p);
+            status
+        })
         .collect()
 }
 
 #[tauri::command]
 pub fn delete_api_key(provider: String) -> Result<(), String> {
     let p = parse_provider(&provider)?;
+    // 検証状態も一緒に消す。消し忘れると、次に別のキーを入れたときに
+    // 未検証のまま「検証済み」と表示される。
+    save_verification(p, None);
     credentials::delete(p).map_err(|e| e.to_string())
 }
 

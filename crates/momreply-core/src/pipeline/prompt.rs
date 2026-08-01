@@ -40,6 +40,17 @@ pub struct Context {
     pub now: String,
     /// 長さの指示（仕様書 6.9.3）。
     pub length_instruction: String,
+    /// 再生成のときだけ入る（仕様書 8.3）。
+    pub retry: Option<Retry>,
+}
+
+/// やり直しの指示。
+#[derive(Debug, Clone)]
+pub struct Retry {
+    /// 前回の生成結果。
+    pub previous: String,
+    /// ユーザーの追加指示。空なら同じ条件でやり直す（仕様書 6.6）。
+    pub instruction: Option<String>,
 }
 
 pub fn system(ctx: &Context) -> String {
@@ -128,7 +139,27 @@ pub fn messages(ctx: &Context) -> Vec<ChatMessage> {
     }
 
     out.push(ChatMessage::user(final_turn(ctx)));
+
+    // 再生成（仕様書 8.3）。前回の結果を assistant として置き、
+    // その後ろにユーザーの指示を足す。
+    if let Some(retry) = &ctx.retry {
+        out.push(ChatMessage::assistant(&retry.previous));
+        out.push(ChatMessage::user(retry_turn(retry)));
+    }
+
     out
+}
+
+fn retry_turn(retry: &Retry) -> String {
+    match retry.instruction.as_deref().map(str::trim) {
+        Some(instruction) if !instruction.is_empty() => format!(
+            "この返信を次の指示で書き直して: {instruction}\n本文のみ出力すること。"
+        ),
+        // 指示が無いときは同じ条件でやり直す。ただし前回と同じ文面を
+        // 返されても意味が無いので、そこだけは伝える。
+        _ => "この返信は使えなかった。前回とは別の内容で書き直して。\n本文のみ出力すること。"
+            .to_string(),
+    }
 }
 
 /// 最後の user メッセージ。
@@ -183,6 +214,7 @@ mod tests {
             known_answers: vec![("保険証はある？".into(), "持っている".into())],
             now: "2026年8月1日(土) 20:00".into(),
             length_instruction: "母のメッセージと同じくらいの長さで返す。".into(),
+            retry: None,
         }
     }
 
@@ -247,5 +279,50 @@ mod tests {
         let mut c = ctx();
         c.questions.clear();
         assert!(!final_turn(&c).contains("必ず答えること"));
+    }
+
+    // MARK: 再生成（仕様書 8.3）
+
+    #[test]
+    fn a_retry_appends_the_previous_result_and_the_instruction() {
+        let mut c = ctx();
+        c.retry = Some(Retry {
+            previous: "作らない".into(),
+            instruction: Some("来ないでほしいと伝えて".into()),
+        });
+        let msgs = messages(&c);
+        let n = msgs.len();
+
+        // 前回の結果が assistant として入り、その後ろに指示が来る。
+        assert_eq!(msgs[n - 2].role, "assistant");
+        assert_eq!(msgs[n - 2].content, "作らない");
+        assert_eq!(msgs[n - 1].role, "user");
+        assert!(msgs[n - 1].content.contains("来ないでほしいと伝えて"));
+        assert!(msgs[n - 1].content.contains("本文のみ"));
+    }
+
+    /// 指示なしの再生成でも、前回と同じ文面を返されては意味が無い。
+    #[test]
+    fn a_retry_without_an_instruction_still_asks_for_something_different() {
+        let turn = retry_turn(&Retry {
+            previous: "作らない".into(),
+            instruction: None,
+        });
+        assert!(turn.contains("別の内容"));
+        assert!(turn.contains("本文のみ"));
+
+        // 空白だけの指示も「指示なし」として扱う。
+        let blank = retry_turn(&Retry {
+            previous: "作らない".into(),
+            instruction: Some("   ".into()),
+        });
+        assert_eq!(turn, blank);
+    }
+
+    #[test]
+    fn without_a_retry_the_conversation_ends_with_the_incoming_message() {
+        let msgs = messages(&ctx());
+        assert_eq!(msgs.last().unwrap().role, "user");
+        assert!(msgs.last().unwrap().content.contains("保険証はある？"));
     }
 }

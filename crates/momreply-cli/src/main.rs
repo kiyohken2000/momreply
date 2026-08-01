@@ -77,9 +77,14 @@ enum Command {
         /// 対象メッセージの ROWID。省略すると直近の受信メッセージを使う。
         #[arg(long)]
         rowid: Option<i64>,
-        /// mirror|short|normal|long|very_long
-        #[arg(long, default_value = "mirror")]
-        length: String,
+        /// mirror|short|normal|long|very_long。
+        /// 省略すると相手ごとの既定値（target set --preset）を使う。
+        #[arg(long)]
+        length: Option<String>,
+        /// 前回の案が使えなかったときのやり直し。
+        /// 値を渡すとその指示で書き直す。空文字なら同じ条件でやり直す。
+        #[arg(long)]
+        redo: Option<String>,
     },
 }
 
@@ -145,6 +150,14 @@ enum TargetCmd {
         #[arg(long)]
         slug: String,
     },
+    /// 相手ごとの設定を変える。
+    Set {
+        #[arg(long)]
+        slug: String,
+        /// 既定の長さ（mirror|short|normal|long|very_long）。
+        #[arg(long)]
+        preset: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -172,7 +185,8 @@ async fn main() -> Result<()> {
             slug,
             rowid,
             length,
-        } => cmd_generate(&chat_db, &slug, rowid, &length).await,
+            redo,
+        } => cmd_generate(&chat_db, &slug, rowid, length.as_deref(), redo).await,
     }
 }
 
@@ -244,12 +258,15 @@ async fn cmd_generate(
     chat_db: &rusqlite::Connection,
     slug: &str,
     rowid: Option<i64>,
-    length: &str,
+    length: Option<&str>,
+    redo: Option<String>,
 ) -> Result<()> {
     let store = Store::open_default()?;
     let target = store
         .target_by_slug(slug)?
         .with_context(|| format!("'{slug}' は登録されていない"))?;
+
+    let length = length.unwrap_or(&target.reply_preset);
     let preset = LengthPreset::parse(length)
         .with_context(|| format!("不明な長さ指定: {length}"))?;
 
@@ -273,7 +290,20 @@ async fn cmd_generate(
     }
     println!();
 
-    let draft = pipeline::draft_reply(chat_db, &store, &target, &message, preset).await?;
+    let redo = redo.as_deref().map(|instruction| {
+        let trimmed = instruction.trim();
+        if trimmed.is_empty() {
+            println!("やり直し（指示なし）");
+        } else {
+            println!("やり直し: {trimmed}");
+        }
+        println!();
+        pipeline::Redo {
+            instruction: (!trimmed.is_empty()).then_some(trimmed),
+        }
+    });
+
+    let draft = pipeline::draft_reply(chat_db, &store, &target, &message, preset, redo).await?;
 
     if !draft.unanswerable.is_empty() {
         println!("答える材料がありません。生成せずに確認へ回しました。");
@@ -308,6 +338,12 @@ async fn cmd_generate(
     if draft.held_for_review {
         println!("※ 長さの上限を超えたため、自動送信の対象から外れます");
     }
+    println!();
+    println!("この案が使えないときは、指示を付けてやり直せます:");
+    println!(
+        "  ./scripts/cli.sh generate --slug {slug} --rowid {} --redo \"月曜は来ないでほしいと伝えて\"",
+        message.rowid
+    );
 
     store.record_processed(
         target.id,
@@ -633,6 +669,19 @@ fn cmd_target(chat_db: &rusqlite::Connection, cmd: TargetCmd) -> Result<()> {
                 .with_context(|| format!("'{slug}' は登録されていない"))?;
             store.remove_target(target.id)?;
             println!("削除: {} ({})", target.display_name, target.slug);
+        }
+
+        TargetCmd::Set { slug, preset } => {
+            let target = store
+                .target_by_slug(&slug)?
+                .with_context(|| format!("'{slug}' は登録されていない"))?;
+            if let Some(p) = preset {
+                LengthPreset::parse(&p).with_context(|| format!("不明な長さ指定: {p}"))?;
+                store.set_reply_preset(target.id, &p)?;
+                println!("{} の既定の長さ: {p}", target.display_name);
+            } else {
+                println!("{} の既定の長さ: {}", target.display_name, target.reply_preset);
+            }
         }
 
         TargetCmd::Pending { slug } => {

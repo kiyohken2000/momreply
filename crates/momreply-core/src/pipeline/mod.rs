@@ -5,8 +5,8 @@
 pub mod generate;
 pub mod prompt;
 
-pub use generate::{draft_reply, Draft, LengthPreset};
-pub use prompt::Context;
+pub use generate::{draft_reply, Draft, LengthPreset, Redo};
+pub use prompt::{Context, Retry};
 
 /// 生成結果の後処理の結末（仕様書 6.2.1）。
 #[derive(Debug, Clone, PartialEq, Eq)]

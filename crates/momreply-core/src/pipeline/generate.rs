@@ -88,12 +88,21 @@ pub struct Draft {
 /// 直近の受信メッセージ 1 件に対して返信案を作る。
 ///
 /// `message` は生成対象として選ばれた受信メッセージ。
+/// 再生成の指定（仕様書 6.6 / 8.3）。
+///
+/// 意味の通らない返信案が出たときに、人が指示を足してやり直させる。
+/// 指示が `None` でも、前回と同じ文面を返させないようには伝える。
+pub struct Redo<'a> {
+    pub instruction: Option<&'a str>,
+}
+
 pub async fn draft_reply(
     chat_db: &Connection,
     store: &Store,
     target: &Target,
     message: &imessage::Message,
     preset: LengthPreset,
+    redo: Option<Redo<'_>>,
 ) -> Result<Draft> {
     let incoming = message
         .body
@@ -148,6 +157,16 @@ pub async fn draft_reply(
             .filter_map(|m| m.body.map(|b| (m.is_from_me, b)))
             .collect();
 
+    // 再生成なら前回の結果を引く。無ければ通常生成に落とす。
+    let retry = match &redo {
+        Some(r) => store.previous_draft(message.rowid)?.map(|previous| prompt::Retry {
+            previous,
+            instruction: r.instruction.map(str::to_string),
+        }),
+        None => None,
+    };
+    let kind = if retry.is_some() { "regenerate" } else { "initial" };
+
     let ctx = prompt::Context {
         display_name: target.display_name.clone(),
         user_name: store
@@ -162,6 +181,7 @@ pub async fn draft_reply(
         known_answers,
         now: chrono::Local::now().format("%Y年%-m月%-d日(%a) %H:%M").to_string(),
         length_instruction: preset.instruction().to_string(),
+        retry,
     };
 
     let llm = llm::build(provider, Some(model.clone())).map_err(anyhow::Error::from)?;
@@ -177,18 +197,19 @@ pub async fn draft_reply(
     )
     .await?;
 
-    store.log_generation(
-        target.id,
-        message.rowid,
-        "initial",
-        provider.id(),
-        &model,
-        response.input_tokens,
-        response.output_tokens,
-        response.latency_ms,
-        Some(&response.text),
-        None,
-    )?;
+    store.log_generation(&crate::store::GenerationRecord {
+        target_id: target.id,
+        chat_rowid: message.rowid,
+        kind,
+        provider: provider.id(),
+        model: &model,
+        input_tokens: response.input_tokens,
+        output_tokens: response.output_tokens,
+        latency_ms: response.latency_ms,
+        user_instruction: redo.as_ref().and_then(|r| r.instruction),
+        output: Some(&response.text),
+        error: None,
+    })?;
 
     let (text, held) = match clean(&response.text, preset.hard_max_length()) {
         Cleaned::Ok(t) => (t, false),

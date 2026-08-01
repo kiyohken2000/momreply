@@ -209,6 +209,23 @@ fn kind_from_label(label: &str) -> QuestionKind {
     }
 }
 
+/// `generation_log` に残す 1 件。
+pub struct GenerationRecord<'a> {
+    pub target_id: i64,
+    pub chat_rowid: i64,
+    /// `initial` | `regenerate` | `profile_update` | `classification`
+    pub kind: &'a str,
+    pub provider: &'a str,
+    pub model: &'a str,
+    pub input_tokens: Option<u32>,
+    pub output_tokens: Option<u32>,
+    pub latency_ms: u64,
+    /// 再生成時のユーザー指示。何を直させたかを後から追えるようにする。
+    pub user_instruction: Option<&'a str>,
+    pub output: Option<&'a str>,
+    pub error: Option<&'a str>,
+}
+
 /// 新規登録の入力。
 #[derive(Debug, Clone)]
 pub struct NewTarget {
@@ -446,6 +463,14 @@ impl Store {
         self.conn.execute(
             "UPDATE target_state SET last_seen_rowid = ?2 WHERE target_id = ?1",
             (target_id, rowid),
+        )?;
+        Ok(())
+    }
+
+    pub fn set_reply_preset(&self, target_id: i64, preset: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE targets SET reply_preset = ?2, updated_at = ?3 WHERE id = ?1",
+            (target_id, preset, now_unix()),
         )?;
         Ok(())
     }
@@ -700,40 +725,41 @@ impl Store {
 
     // MARK: 記録
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn log_generation(
-        &self,
-        target_id: i64,
-        chat_rowid: i64,
-        kind: &str,
-        provider: &str,
-        model: &str,
-        input_tokens: Option<u32>,
-        output_tokens: Option<u32>,
-        latency_ms: u64,
-        output: Option<&str>,
-        error: Option<&str>,
-    ) -> Result<()> {
+    pub fn log_generation(&self, rec: &GenerationRecord<'_>) -> Result<()> {
         self.conn.execute(
             "INSERT INTO generation_log
-               (target_id, chat_rowid, kind, provider, model,
-                input_tokens, output_tokens, latency_ms, output, error, created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+               (target_id, chat_rowid, kind, provider, model, input_tokens, output_tokens,
+                latency_ms, user_instruction, output, error, created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
             (
-                target_id,
-                chat_rowid,
-                kind,
-                provider,
-                model,
-                input_tokens,
-                output_tokens,
-                latency_ms as i64,
-                output,
-                error,
+                rec.target_id,
+                rec.chat_rowid,
+                rec.kind,
+                rec.provider,
+                rec.model,
+                rec.input_tokens,
+                rec.output_tokens,
+                rec.latency_ms as i64,
+                rec.user_instruction,
+                rec.output,
+                rec.error,
                 now_unix(),
             ),
         )?;
         Ok(())
+    }
+
+    /// 前回の生成結果。再生成の入力に使う。
+    pub fn previous_draft(&self, chat_rowid: i64) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT draft FROM processed_messages WHERE chat_rowid = ?1",
+                [chat_rowid],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map(Option::flatten)
+            .map_err(Into::into)
     }
 
     /// 処理結果を記録する。`status` は仕様書 5.2 の値。

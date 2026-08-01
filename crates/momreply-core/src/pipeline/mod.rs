@@ -3,9 +3,11 @@
 //! 送信は Phase 2 で足す。ここまでは生成と記録だけを行う。
 
 pub mod generate;
+pub mod guards;
 pub mod prompt;
 
 pub use generate::{draft_reply, Draft, LengthPreset, Redo};
+pub use guards::{evaluate, HoldReason, Limits, Verdict};
 pub use prompt::{Context, Retry};
 
 /// 生成結果の後処理の結末（仕様書 6.2.1）。

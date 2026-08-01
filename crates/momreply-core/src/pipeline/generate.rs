@@ -8,7 +8,7 @@ use rusqlite::Connection;
 use crate::{
     imessage,
     llm::{self, CompletionRequest, LlmError, Provider},
-    pipeline::{clean, prompt, Cleaned},
+    pipeline::{clean, guards, prompt, Cleaned},
     profile, questions,
     store::{Store, Target},
 };
@@ -83,11 +83,10 @@ pub struct Draft {
     pub held_for_review: bool,
     /// 答える材料が無かった質問。空でなければ生成せず人間に聞く。
     pub unanswerable: Vec<String>,
+    /// ガードで止まった場合の理由（仕様書 6.4）。生成していない。
+    pub skipped: Option<guards::SkipReason>,
 }
 
-/// 直近の受信メッセージ 1 件に対して返信案を作る。
-///
-/// `message` は生成対象として選ばれた受信メッセージ。
 /// 再生成の指定（仕様書 6.6 / 8.3）。
 ///
 /// 意味の通らない返信案が出たときに、人が指示を足してやり直させる。
@@ -96,6 +95,9 @@ pub struct Redo<'a> {
     pub instruction: Option<&'a str>,
 }
 
+/// 直近の受信メッセージ 1 件に対して返信案を作る。
+///
+/// `message` は生成対象として選ばれた受信メッセージ。
 pub async fn draft_reply(
     chat_db: &Connection,
     store: &Store,
@@ -108,6 +110,26 @@ pub async fn draft_reply(
         .body
         .clone()
         .context("本文が無いメッセージは生成対象にならない")?;
+
+    // 生成の直前に既返信チェック（仕様書 6.4.3）。
+    // 送信の直前にもう一度行う。生成に数秒かかる間に手で返信されうるため。
+    let own_replies =
+        imessage::count_own_replies_after(chat_db, &target.handles, message.rowid)?;
+    if own_replies > 0 {
+        return Ok(Draft {
+            chat_rowid: message.rowid,
+            incoming,
+            text: String::new(),
+            provider: String::new(),
+            model: String::new(),
+            input_tokens: None,
+            output_tokens: None,
+            latency_ms: 0,
+            held_for_review: false,
+            unanswerable: Vec::new(),
+            skipped: Some(guards::SkipReason::AlreadyReplied),
+        });
+    }
 
     // 質問を取り出し、答える材料があるか調べる。
     // 材料が無いものは生成に回さず人間に聞く（はぐらかしを出さないため）。
@@ -141,6 +163,7 @@ pub async fn draft_reply(
             latency_ms: 0,
             held_for_review: true,
             unanswerable,
+            skipped: None,
         });
     }
 
@@ -232,6 +255,7 @@ pub async fn draft_reply(
         latency_ms: response.latency_ms,
         held_for_review: held,
         unanswerable: Vec::new(),
+        skipped: None,
     })
 }
 

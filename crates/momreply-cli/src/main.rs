@@ -305,6 +305,26 @@ async fn cmd_generate(
 
     let draft = pipeline::draft_reply(chat_db, &store, &target, &message, preset, redo).await?;
 
+    if let Some(reason) = &draft.skipped {
+        println!("ガードにより生成しませんでした: {}", reason.label());
+        if matches!(reason, pipeline::guards::SkipReason::AlreadyReplied) {
+            println!("  このメッセージには既に自分から返信しています（二重返信の防止）。");
+        }
+        store.record_processed(
+            target.id,
+            message.rowid,
+            &message.chat_identifier,
+            message.date.timestamp(),
+            message.body.as_deref(),
+            "skipped",
+            Some(reason.label()),
+            None,
+            None,
+            None,
+        )?;
+        return Ok(());
+    }
+
     if !draft.unanswerable.is_empty() {
         println!("答える材料がありません。生成せずに確認へ回しました。");
         for q in &draft.unanswerable {

@@ -17,7 +17,7 @@ use rusqlite::Connection;
 
 use crate::{
     imessage::{self, sender},
-    pipeline::{draft_reply, guards, LengthPreset, Redo},
+    pipeline::{draft_reply, guards, LengthPreset, Redo, Urgency},
     store::{Store, Target},
 };
 
@@ -94,7 +94,7 @@ pub async fn process(
     let redo = options.redo_instruction.as_deref().map(|i| Redo {
         instruction: Some(i),
     });
-    let draft = match draft_reply(chat_db, store, target, message, options.preset, redo).await {
+    let draft = match draft_reply(chat_db, store, target, message, options.preset, redo, Urgency::Background).await {
         Ok(d) => d,
         Err(why) => {
             // 失敗しても定型文などは送らない（仕様書 1.2-3）。

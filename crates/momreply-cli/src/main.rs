@@ -610,7 +610,10 @@ async fn cmd_generate(
         }
     });
 
-    let draft = pipeline::draft_reply(chat_db, &store, &target, &message, preset, redo).await?;
+    let draft = pipeline::draft_reply(
+        chat_db, &store, &target, &message, preset, redo, pipeline::Urgency::Interactive,
+    )
+    .await?;
 
     if let Some(reason) = &draft.skipped {
         println!("ガードにより生成しませんでした: {}", reason.label());

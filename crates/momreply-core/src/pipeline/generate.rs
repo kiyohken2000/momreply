@@ -87,6 +87,18 @@ pub struct Draft {
     pub skipped: Option<guards::SkipReason>,
 }
 
+/// 呼び出しの性質。リトライの粘り方が変わる。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Urgency {
+    /// 人が画面の前で待っている。**粘らない。**
+    ///
+    /// レート制限は数秒では明けない。待たせたうえで失敗するくらいなら、
+    /// すぐ理由を見せて別の手段（プロバイダの切り替え）を選ばせるほうがよい。
+    Interactive,
+    /// 裏で動いている。誰も待っていないので粘ってよい。
+    Background,
+}
+
 /// 再生成の指定（仕様書 6.6 / 8.3）。
 ///
 /// 意味の通らない返信案が出たときに、人が指示を足してやり直させる。
@@ -105,6 +117,7 @@ pub async fn draft_reply(
     message: &imessage::Message,
     preset: LengthPreset,
     redo: Option<Redo<'_>>,
+    urgency: Urgency,
 ) -> Result<Draft> {
     let incoming = message
         .body
@@ -207,6 +220,7 @@ pub async fn draft_reply(
     let llm = llm::build(provider, Some(model.clone())).map_err(anyhow::Error::from)?;
     let response = call_with_retry(
         llm.as_ref(),
+        urgency,
         CompletionRequest {
             model: model.clone(),
             system: prompt::system(&ctx),
@@ -301,6 +315,7 @@ pub async fn draft_reply(
 /// 実際に Gemini でそうなった。ネットワークの一時エラーとは別扱いにする。
 async fn call_with_retry(
     llm: &dyn llm::LlmProvider,
+    urgency: Urgency,
     req: CompletionRequest,
 ) -> Result<llm::CompletionResponse> {
     const NETWORK_BASE: std::time::Duration = std::time::Duration::from_millis(500);
@@ -310,6 +325,14 @@ async fn call_with_retry(
 
     for attempt in 0..3u32 {
         match llm.complete(req.clone()).await {
+            // 画面の前で待っている人を、明けない制限のために止めない。
+            Err(LlmError::RateLimit(body)) if urgency == Urgency::Interactive => {
+                return Err(anyhow::anyhow!(
+                    "レート制限に達しました。しばらく待つか、設定タブで別のAIに\
+                     切り替えてください。{}",
+                    brief_body(&body)
+                ));
+            }
             Ok(r) => return Ok(r),
             Err(e) if e.is_retryable() => {
                 let base = if matches!(e, LlmError::RateLimit(_)) {
@@ -333,6 +356,16 @@ async fn call_with_retry(
     Err(last
         .map(anyhow::Error::from)
         .unwrap_or_else(|| anyhow::anyhow!("生成に失敗した")))
+}
+
+/// API の応答を、画面に出せる長さに縮める。
+fn brief_body(body: &str) -> String {
+    let head: String = body.chars().filter(|c| *c != '\n').take(120).collect();
+    if head.trim().is_empty() {
+        String::new()
+    } else {
+        format!("（{head}）")
+    }
 }
 
 /// 主プロバイダ。未設定なら設定済みのものから選ぶ。

@@ -347,6 +347,7 @@ fn regenerate_blocking(
         Some(Redo {
             instruction: instruction.as_deref(),
         }),
+        momreply_core::pipeline::Urgency::Interactive,
     ))
     .map_err(|e| e.to_string())?;
 
@@ -693,7 +694,13 @@ fn preview_blocking(slug: &str) -> Result<Preview, String> {
 
     let preset = LengthPreset::parse(&target.reply_preset).unwrap_or(LengthPreset::Mirror);
     let draft = tauri::async_runtime::block_on(draft_reply(
-        &chat_db, &store, &target, &message, preset, None,
+        &chat_db,
+        &store,
+        &target,
+        &message,
+        preset,
+        None,
+        momreply_core::pipeline::Urgency::Interactive,
     ))
     .map_err(|e| e.to_string())?;
 

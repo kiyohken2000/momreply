@@ -244,6 +244,22 @@ pub struct GenerationRecord<'a> {
     pub error: Option<&'a str>,
 }
 
+/// 人の確認を待っている 1 件。
+#[derive(Debug, Clone)]
+pub struct PendingItem {
+    pub chat_rowid: i64,
+    pub target_id: i64,
+    pub target_slug: String,
+    pub display_name: String,
+    /// 受信元。**返信はここに送る**（仕様書 6.3）。
+    pub chat_guid: String,
+    pub received_at: i64,
+    pub body: Option<String>,
+    pub status: String,
+    pub skip_reason: Option<String>,
+    pub draft: Option<String>,
+}
+
 /// `self.md` への追記候補。**承認するまで反映しない。**
 #[derive(Debug, Clone)]
 pub struct FactCandidate {
@@ -927,6 +943,47 @@ impl Store {
         self.conn.execute(
             "UPDATE fact_candidates SET status = ?2 WHERE id = ?1",
             (id, status),
+        )?;
+        Ok(())
+    }
+
+    // MARK: 確認待ちの一覧
+
+    /// 人の確認を待っているもの（仕様書 6.6）。新しい順。
+    pub fn pending_items(&self, limit: u32) -> Result<Vec<PendingItem>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT p.chat_rowid, p.target_id, t.slug, t.display_name, p.chat_guid,
+                    p.received_at, p.body, p.status, p.skip_reason, p.draft
+             FROM processed_messages p
+             JOIN targets t ON t.id = p.target_id
+             WHERE p.status IN ('awaiting_review', 'dry_run')
+             ORDER BY p.received_at DESC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit], |r| {
+            Ok(PendingItem {
+                chat_rowid: r.get(0)?,
+                target_id: r.get(1)?,
+                target_slug: r.get(2)?,
+                display_name: r.get(3)?,
+                chat_guid: r.get(4)?,
+                received_at: r.get(5)?,
+                body: r.get(6)?,
+                status: r.get(7)?,
+                skip_reason: r.get(8)?,
+                draft: r.get(9)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn mark_skipped(&self, chat_rowid: i64, reason: &str) -> Result<()> {
+        let now = now_unix();
+        self.conn.execute(
+            "UPDATE processed_messages
+             SET status = 'skipped', skip_reason = ?2, updated_at = ?3
+             WHERE chat_rowid = ?1",
+            (chat_rowid, reason, now),
         )?;
         Ok(())
     }

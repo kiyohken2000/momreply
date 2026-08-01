@@ -46,6 +46,63 @@ export function canEnableAutoSend(): Promise<boolean> {
   return invoke("can_enable_auto_send");
 }
 
+export type PendingQuestion = { id: number; question: string };
+
+export type Pending = {
+  chat_rowid: number;
+  target_slug: string;
+  display_name: string;
+  received_at: number;
+  incoming: string;
+  draft: string;
+  status: string;
+  reason: string | null;
+  /** 答える材料が無い質問。あればこれを先に埋める。 */
+  questions: PendingQuestion[];
+};
+
+export function listPending(): Promise<Pending[]> {
+  return invoke("list_pending");
+}
+
+/** 送信直前の既返信チェックはバックエンドで行われる。 */
+export function sendReply(chatRowid: number, text: string): Promise<string> {
+  return invoke("send_reply", { chatRowid, text });
+}
+
+export function regenerate(
+  chatRowid: number,
+  instruction: string | null,
+  length: string | null,
+): Promise<string> {
+  return invoke("regenerate", { chatRowid, instruction, length });
+}
+
+export function skipPending(chatRowid: number): Promise<void> {
+  return invoke("skip_pending", { chatRowid });
+}
+
+export function answerQuestion(id: number, answer: string): Promise<void> {
+  return invoke("answer_question", { id, answer });
+}
+
+export type RunMode = { auto_send: boolean; dry_run: boolean };
+
+export function getRunMode(): Promise<RunMode> {
+  return invoke("get_run_mode");
+}
+
+export function setRunMode(autoSend: boolean, dryRun: boolean): Promise<void> {
+  return invoke("set_run_mode", { autoSend, dryRun });
+}
+
+export const LENGTH_PRESETS = [
+  { id: "short", label: "短め" },
+  { id: "mirror", label: "合わせる" },
+  { id: "normal", label: "ふつう" },
+  { id: "long", label: "長め" },
+] as const;
+
 /** `self.md` の全文。AI が事実として断定してよい唯一の材料。 */
 export function getSelfProfile(): Promise<string> {
   return invoke("get_self_profile");

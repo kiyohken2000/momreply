@@ -181,6 +181,257 @@ pub fn can_enable_auto_send() -> bool {
         .any(credentials::is_configured)
 }
 
+// MARK: 確認待ちの返信（仕様書 6.6）
+
+#[derive(Serialize)]
+pub struct PendingView {
+    chat_rowid: i64,
+    target_slug: String,
+    display_name: String,
+    received_at: i64,
+    incoming: String,
+    draft: String,
+    status: String,
+    reason: Option<String>,
+    /// 答える材料が無い質問。あれば先にこれを埋める。
+    questions: Vec<PendingQuestionView>,
+}
+
+#[derive(Serialize)]
+pub struct PendingQuestionView {
+    id: i64,
+    question: String,
+}
+
+fn open_chat_db() -> Result<rusqlite::Connection, String> {
+    let path = momreply_core::imessage::default_path().map_err(|e| e.to_string())?;
+    momreply_core::imessage::open_readonly(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_pending() -> Result<Vec<PendingView>, String> {
+    let store = Store::open_default().map_err(|e| e.to_string())?;
+    let items = store.pending_items(50).map_err(|e| e.to_string())?;
+
+    let mut out = Vec::new();
+    for item in items {
+        // 材料不足で止まったものは、質問を一緒に見せないと直せない。
+        let questions = if item.skip_reason.as_deref() == Some("needs_answer") {
+            store
+                .unanswered_questions(item.target_id)
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .map(|q| PendingQuestionView {
+                    id: q.id,
+                    question: q.question,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        out.push(PendingView {
+            chat_rowid: item.chat_rowid,
+            target_slug: item.target_slug,
+            display_name: item.display_name,
+            received_at: item.received_at,
+            incoming: item.body.unwrap_or_default(),
+            draft: item.draft.unwrap_or_default(),
+            status: item.status,
+            reason: item.skip_reason,
+            questions,
+        });
+    }
+    Ok(out)
+}
+
+/// 人が確認して送る。**送信直前の既返信チェックは core 側で行う。**
+///
+/// 送信の検証は最大 30 秒かかる。chat.db の `Connection` は `Sync` でなく
+/// `.await` をまたげないこともあり、丸ごと別スレッドに逃がす。
+#[tauri::command]
+pub async fn send_reply(chat_rowid: i64, text: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || send_reply_blocking(chat_rowid, &text))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn send_reply_blocking(chat_rowid: i64, text: &str) -> Result<String, String> {
+    let store = Store::open_default().map_err(|e| e.to_string())?;
+    let item = store
+        .pending_items(50)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|i| i.chat_rowid == chat_rowid)
+        .ok_or_else(|| format!("#{chat_rowid} は確認待ちにありません"))?;
+    let target = store
+        .target_by_slug(&item.target_slug)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("'{}' は登録されていません", item.target_slug))?;
+
+    let chat_db = open_chat_db()?;
+    let outcome = momreply_core::pipeline::run::send_manual(
+        &chat_db,
+        &store,
+        &target,
+        chat_rowid,
+        &item.chat_guid,
+        text,
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(match outcome {
+        momreply_core::pipeline::Outcome::Sent { .. } => "送信しました".into(),
+        momreply_core::pipeline::Outcome::SentUnverified => {
+            "送信しましたが確認できませんでした。再送はしていません".into()
+        }
+        momreply_core::pipeline::Outcome::Skipped(_) => {
+            "既に自分から返信済みだったため送信しませんでした".into()
+        }
+        momreply_core::pipeline::Outcome::Failed(why) => return Err(why),
+        other => format!("{other:?}"),
+    })
+}
+
+/// 追加指示つき再生成（仕様書 6.6 / 8.3）。
+#[tauri::command]
+pub async fn regenerate(
+    chat_rowid: i64,
+    instruction: Option<String>,
+    length: Option<String>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        regenerate_blocking(chat_rowid, instruction, length)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn regenerate_blocking(
+    chat_rowid: i64,
+    instruction: Option<String>,
+    length: Option<String>,
+) -> Result<String, String> {
+    use momreply_core::pipeline::{draft_reply, LengthPreset, Redo};
+
+    let store = Store::open_default().map_err(|e| e.to_string())?;
+    let item = store
+        .pending_items(50)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|i| i.chat_rowid == chat_rowid)
+        .ok_or_else(|| format!("#{chat_rowid} は確認待ちにありません"))?;
+    let target = store
+        .target_by_slug(&item.target_slug)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("'{}' は登録されていません", item.target_slug))?;
+
+    let chat_db = open_chat_db()?;
+    let message =
+        momreply_core::imessage::reader::message_by_rowid(&chat_db, &target.handles, chat_rowid)
+            .map_err(|e| e.to_string())?
+            .ok_or("元のメッセージが見つかりません")?;
+
+    let preset = LengthPreset::parse(length.as_deref().unwrap_or(&target.reply_preset))
+        .ok_or("長さの指定が不正です")?;
+    let instruction = instruction
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let draft = tauri::async_runtime::block_on(draft_reply(
+        &chat_db,
+        &store,
+        &target,
+        &message,
+        preset,
+        Some(Redo {
+            instruction: instruction.as_deref(),
+        }),
+    ))
+    .map_err(|e| e.to_string())?;
+
+    store
+        .record_processed(
+            target.id,
+            chat_rowid,
+            &item.chat_guid,
+            item.received_at,
+            item.body.as_deref(),
+            &item.status,
+            item.skip_reason.as_deref(),
+            Some(&draft.text),
+            Some(&draft.provider),
+            Some(&draft.model),
+        )
+        .map_err(|e| e.to_string())?;
+
+    Ok(draft.text)
+}
+
+/// この 1 件は返さない、と決める。連続カウンタは 0 に戻す（仕様書 6.4.5.1）。
+#[tauri::command]
+pub fn skip_pending(chat_rowid: i64) -> Result<(), String> {
+    let store = Store::open_default().map_err(|e| e.to_string())?;
+    if let Some(item) = store
+        .pending_items(50)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|i| i.chat_rowid == chat_rowid)
+    {
+        let _ = store.reset_consecutive(item.target_id);
+    }
+    store
+        .mark_skipped(chat_rowid, "user_skipped")
+        .map_err(|e| e.to_string())
+}
+
+/// 材料不足の質問に答える。self.md にも追記される。
+#[tauri::command]
+pub fn answer_question(id: i64, answer: String) -> Result<(), String> {
+    let store = Store::open_default().map_err(|e| e.to_string())?;
+    let q = store
+        .answer_question(id, &answer)
+        .map_err(|e| e.to_string())?;
+    momreply_core::profile::append_fact(&q.question, &answer).map_err(|e| e.to_string())
+}
+
+// MARK: キルスイッチとドライラン（仕様書 6.4.6 / 6.4.7）
+
+#[derive(Serialize)]
+pub struct RunMode {
+    auto_send: bool,
+    /// **既定は true。** 明示的に切らない限り送らない。
+    dry_run: bool,
+}
+
+#[tauri::command]
+pub fn get_run_mode() -> Result<RunMode, String> {
+    let store = Store::open_default().map_err(|e| e.to_string())?;
+    Ok(RunMode {
+        auto_send: store
+            .get_kv("auto_send_enabled")
+            .map_err(|e| e.to_string())?
+            .map(|v| v != "false")
+            .unwrap_or(true),
+        dry_run: store
+            .get_kv("dry_run")
+            .map_err(|e| e.to_string())?
+            .map(|v| v != "false")
+            .unwrap_or(true),
+    })
+}
+
+#[tauri::command]
+pub fn set_run_mode(auto_send: bool, dry_run: bool) -> Result<(), String> {
+    let store = Store::open_default().map_err(|e| e.to_string())?;
+    store
+        .set_kv("auto_send_enabled", if auto_send { "true" } else { "false" })
+        .map_err(|e| e.to_string())?;
+    store
+        .set_kv("dry_run", if dry_run { "true" } else { "false" })
+        .map_err(|e| e.to_string())
+}
+
 // MARK: self.md
 
 /// `self.md` の全文を返す。無ければテンプレートを作って返す。

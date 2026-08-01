@@ -5,13 +5,19 @@
 //! CLI と共有するためクレートを分けている。ここは薄いシェルに留める。
 
 mod commands;
+mod notify;
 mod tray;
+mod watcher;
 
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_positioner::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             tray::setup(app.handle())?;
+            // 新着の監視を常駐させる。ここが動いていないと、
+            // 材料不足で止まったことに気づけず無返信になる。
+            watcher::spawn(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -29,6 +35,13 @@ pub fn run() {
             commands::list_fact_candidates,
             commands::approve_fact,
             commands::reject_fact,
+            commands::list_pending,
+            commands::send_reply,
+            commands::regenerate,
+            commands::skip_pending,
+            commands::answer_question,
+            commands::get_run_mode,
+            commands::set_run_mode,
         ])
         .build(tauri::generate_context!())
         .expect("Tauri アプリを初期化できない")

@@ -198,6 +198,67 @@ pub async fn process(
     }
 }
 
+/// 人が確認して送る（仕様書 6.6）。
+///
+/// 自動送信と違い、ガードのほとんどは通さない。人が見て決めたものを
+/// レートリミットで止めるのは筋が通らない。
+/// **ただし既返信チェックだけは必ず行う。** 画面を開いたまま放置して
+/// いる間に iPhone で返信していることがあり、それを送ると二重返信になる。
+pub fn send_manual(
+    chat_db: &Connection,
+    store: &Store,
+    target: &Target,
+    chat_rowid: i64,
+    chat_identifier: &str,
+    text: &str,
+) -> Result<Outcome> {
+    if text.trim().is_empty() {
+        return Ok(Outcome::Failed("本文が空です".into()));
+    }
+
+    if imessage::count_own_replies_after(chat_db, &target.handles, chat_rowid)? > 0 {
+        store.record_processed(
+            target.id,
+            chat_rowid,
+            chat_identifier,
+            Local::now().timestamp(),
+            None,
+            "skipped",
+            Some(guards::SkipReason::AlreadyReplied.label()),
+            None,
+            None,
+            None,
+        )?;
+        return Ok(Outcome::Skipped(guards::SkipReason::AlreadyReplied));
+    }
+
+    let baseline = imessage::max_rowid(chat_db, &target.handles)?.unwrap_or(0);
+    if let Err(why) = sender::send(chat_identifier, text) {
+        store.mark_failed(chat_rowid, "send_failed")?;
+        return Ok(Outcome::Failed(why.to_string()));
+    }
+
+    // 人が介入したので連続自動返信のカウンタは 0 に戻す（仕様書 6.4.5.1）。
+    store.reset_consecutive(target.id)?;
+
+    match sender::verify(
+        chat_db,
+        &target.handles,
+        baseline,
+        text,
+        sender::verify_timeout(),
+    )? {
+        sender::Outcome::Sent { rowid } => {
+            store.mark_sent(chat_rowid, text, Some(rowid))?;
+            Ok(Outcome::Sent { rowid })
+        }
+        sender::Outcome::Unverified => {
+            store.mark_failed(chat_rowid, "verify_timeout")?;
+            Ok(Outcome::SentUnverified)
+        }
+    }
+}
+
 /// キルスイッチ（仕様書 6.4.6）。既定は ON（＝自動送信を許す）。
 fn kill_switch_on(store: &Store) -> Result<bool> {
     Ok(store

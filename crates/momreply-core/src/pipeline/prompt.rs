@@ -16,6 +16,22 @@
 
 use crate::{fewshot::Pair, llm::ChatMessage, questions::Question};
 
+/// 材料が足りないことをモデルに知らせてもらうための合図。
+///
+/// 答えられるかどうかは `self.md` を見ないと決まらない。それを持って
+/// いるのはモデルなので、判定もモデルにさせる。別途 LLM に問い合わせる
+/// より呼び出しが 1 回で済む。
+///
+/// 通常の日本語には現れない形にして、本文に紛れても検出できるようにする。
+pub const NEED_INFO: &str = "[[NEED_INFO]]";
+
+/// 生成結果が「材料不足」の合図かどうか。
+///
+/// 前後に説明を付けてくることがあるので、含まれていれば合図とみなす。
+pub fn is_need_info(text: &str) -> bool {
+    text.contains(NEED_INFO)
+}
+
 /// 生成に必要な材料。
 pub struct Context {
     /// 相手の表示名。
@@ -71,13 +87,18 @@ pub fn system(ctx: &Context) -> String {
     );
 
     // ここがこのアプリの肝。仕様書 8.1 から意図的に変えている箇所。
-    s.push_str(
+    s.push_str(&format!(
         "# 質問には必ず答える\n\
          相手の質問をはぐらかさない。「確認してみる」「また連絡する」で\n\
          済ませない。答えは下の『答えるための材料』に書いてある。\n\
-         材料に書いてあることは、迷わず言い切る。\n\
-         材料に無いことは推測しない。その場合だけ、分からないと正直に書く。\n\n",
-    );
+         材料に書いてあることは、迷わず言い切る。\n\n\
+         # 材料が足りないとき\n\
+         質問に答えるための材料が下に無い場合は、**推測で書かない。**\n\
+         代わりに {NEED_INFO} とだけ出力する。他には何も書かない。\n\
+         その場合は人間が答えを用意する。適当に濁した返信を送るより、\n\
+         一度止まるほうがよい。\n\
+         材料がある質問には、この記号を使わずに普通に答えること。\n\n"
+    ));
 
     s.push_str(
         "# 文体と内容の使い分け（重要）\n\
@@ -175,7 +196,9 @@ fn final_turn(ctx: &Context) -> String {
         for q in &ctx.questions {
             s.push_str(&format!("\n・{}", q.text));
         }
-        s.push(')');
+        s.push_str(&format!(
+            "\n材料が無くて答えられない場合は {NEED_INFO} とだけ出力する）"
+        ));
     }
 
     s.push_str(&format!("\n\n（{}）", ctx.length_instruction));
@@ -272,6 +295,24 @@ mod tests {
         assert!(last.contains("保険証はある？"));
         assert!(last.contains("必ず答えること"));
         assert!(last.contains("同じくらいの長さ"));
+    }
+
+    /// 材料が無いときは推測させず、合図を返させる。
+    #[test]
+    fn the_prompt_asks_for_a_signal_when_material_is_missing() {
+        let s = system(&ctx());
+        assert!(s.contains(NEED_INFO));
+        assert!(s.contains("推測で書かない"));
+        // 末尾にも再掲する。system 側の指示は few-shot に押し負ける。
+        assert!(final_turn(&ctx()).contains(NEED_INFO));
+    }
+
+    #[test]
+    fn the_signal_is_detected_even_with_surrounding_text() {
+        assert!(is_need_info(NEED_INFO));
+        assert!(is_need_info(&format!("すみません {NEED_INFO}")));
+        assert!(!is_need_info("わかった、明日行くね"));
+        assert!(!is_need_info(""));
     }
 
     #[test]

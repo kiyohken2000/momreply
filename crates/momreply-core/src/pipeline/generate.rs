@@ -131,11 +131,14 @@ pub async fn draft_reply(
         });
     }
 
-    // 質問を取り出し、答える材料があるか調べる。
-    // 材料が無いものは生成に回さず人間に聞く（はぐらかしを出さないため）。
+    // 質問を取り出し、はっきり答えが決まっているものを拾う。
+    //
+    // **ここで答えられないと決めつけない。** 答えの材料は self.md にも
+    // あり、それを持っているのはモデルである。判定はモデルにさせ、
+    // 足りなければ合図（[`prompt::NEED_INFO`]）を返してもらう。
+    // 事前に弾くと、self.md に書いた事実が一切使われない。
     let found = questions::extract(&incoming);
     let mut known_answers = Vec::new();
-    let mut unanswerable = Vec::new();
 
     for q in &found {
         if let Some(answer) = store.known_answer(target.id, &q.text)? {
@@ -144,27 +147,7 @@ pub async fn draft_reply(
         }
         if let Some(standing) = store.standing_answer(target.id, q.kind())? {
             known_answers.push((q.text.clone(), standing.answer));
-            continue;
         }
-        unanswerable.push(q.text.clone());
-    }
-
-    if !unanswerable.is_empty() {
-        // 質問として記録しておく。人間が答えれば次から自動で答えられる。
-        store.record_questions(target.id, message.rowid, &found)?;
-        return Ok(Draft {
-            chat_rowid: message.rowid,
-            incoming,
-            text: String::new(),
-            provider: String::new(),
-            model: String::new(),
-            input_tokens: None,
-            output_tokens: None,
-            latency_ms: 0,
-            held_for_review: true,
-            unanswerable,
-            skipped: None,
-        });
     }
 
     let provider = primary_provider(store)?;
@@ -200,7 +183,7 @@ pub async fn draft_reply(
         fewshot: store.fewshot(target.id)?,
         recent,
         incoming: incoming.clone(),
-        questions: found,
+        questions: found.clone(),
         known_answers,
         now: chrono::Local::now().format("%Y年%-m月%-d日(%a) %H:%M").to_string(),
         length_instruction: preset.instruction().to_string(),
@@ -234,6 +217,31 @@ pub async fn draft_reply(
         error: None,
     })?;
 
+    // モデルが「材料が足りない」と言ってきた場合。
+    // 濁した返信を送るより、人間に一度聞くほうがよい。
+    if prompt::is_need_info(&response.text) {
+        store.record_questions(target.id, message.rowid, &found)?;
+        let asked: Vec<String> = found.iter().map(|q| q.text.clone()).collect();
+        return Ok(Draft {
+            chat_rowid: message.rowid,
+            incoming,
+            text: String::new(),
+            provider: provider.id().to_string(),
+            model,
+            input_tokens: response.input_tokens,
+            output_tokens: response.output_tokens,
+            latency_ms: response.latency_ms,
+            held_for_review: true,
+            // 質問が取れていない場合もある（合図だけ返ってきたとき）。
+            unanswerable: if asked.is_empty() {
+                vec![incoming_summary(&response.text)]
+            } else {
+                asked
+            },
+            skipped: None,
+        });
+    }
+
     let (text, held) = match clean(&response.text, preset.hard_max_length()) {
         Cleaned::Ok(t) => (t, false),
         Cleaned::TooLong { text, chars } => {
@@ -257,6 +265,17 @@ pub async fn draft_reply(
         unanswerable: Vec::new(),
         skipped: None,
     })
+}
+
+/// 質問が取り出せていないのに材料不足と言われたときの表示。
+fn incoming_summary(raw: &str) -> String {
+    let rest = raw.replace(prompt::NEED_INFO, "");
+    let trimmed = rest.trim();
+    if trimmed.is_empty() {
+        "このメッセージに答える材料がありません".to_string()
+    } else {
+        trimmed.chars().take(80).collect()
+    }
 }
 
 /// 指数バックオフで最大 3 回（仕様書 6.2）。

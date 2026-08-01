@@ -2,6 +2,8 @@
 
 pub mod anthropic;
 pub mod credentials;
+pub mod gemini;
+pub mod openai;
 
 use std::time::Duration;
 
@@ -58,6 +60,41 @@ impl Provider {
     /// キーを要するプロバイダの一覧。設定画面はこの順で並べる。
     pub fn with_keys() -> [Provider; 3] {
         [Provider::Anthropic, Provider::Gemini, Provider::Openai]
+    }
+
+    /// 既定モデル。
+    ///
+    /// **モデル名はハードコードせず設定で上書きできること**（仕様書 7.2）。
+    /// ここの値はあくまで初期値で、実行時点で有効かは疎通テストで分かる。
+    pub fn default_model(self) -> &'static str {
+        match self {
+            Provider::Anthropic => anthropic::DEFAULT_MODEL,
+            Provider::Gemini => gemini::DEFAULT_MODEL,
+            Provider::Openai => openai::DEFAULT_MODEL,
+            Provider::Apple => "on-device",
+        }
+    }
+
+    /// app.db の kv に入れるモデル設定のキー。
+    pub fn model_setting_key(self) -> String {
+        format!("model.{}", self.id())
+    }
+}
+
+/// プロバイダ実装を作る。
+pub fn build(provider: Provider, model: Option<String>) -> Result<Box<dyn LlmProvider>, LlmError> {
+    let model = model
+        .map(|m| m.trim().to_string())
+        .filter(|m| !m.is_empty())
+        .unwrap_or_else(|| provider.default_model().to_string());
+
+    match provider {
+        Provider::Anthropic => Ok(Box::new(anthropic::Anthropic::new(model))),
+        Provider::Gemini => Ok(Box::new(gemini::Gemini::new(model))),
+        Provider::Openai => Ok(Box::new(openai::Openai::new(model))),
+        Provider::Apple => Err(LlmError::InvalidOutput(
+            "Apple Intelligence はまだ実装されていません".into(),
+        )),
     }
 }
 

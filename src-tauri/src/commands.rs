@@ -5,22 +5,20 @@
 //! しか持たない。core 側もキーを返す関数を公開していないため、
 //! ここで誤って露出させようとしてもコンパイルが通らない。
 
-use momreply_core::llm::{
-    anthropic::Anthropic, credentials, KeyStatus, LlmError, LlmProvider, Provider,
+use momreply_core::{
+    llm::{self, credentials, KeyStatus, LlmError, Provider},
+    store::Store,
 };
+use serde::Serialize;
 
 fn parse_provider(provider: &str) -> Result<Provider, String> {
     Provider::parse(provider).ok_or_else(|| format!("不明なプロバイダ: {provider}"))
 }
 
-fn provider_impl(provider: Provider, model: Option<String>) -> Result<Box<dyn LlmProvider>, String> {
-    match provider {
-        Provider::Anthropic => Ok(Box::new(Anthropic::new(
-            model.unwrap_or_else(|| momreply_core::llm::anthropic::DEFAULT_MODEL.to_string()),
-        ))),
-        // Gemini / OpenAI / Apple は未実装。
-        other => Err(format!("{} はまだ実装されていません", other.id())),
-    }
+/// 設定中のモデル名を読む。未設定なら既定値。
+fn model_for(provider: Provider) -> Option<String> {
+    let store = Store::open_default().ok()?;
+    store.get_kv(&provider.model_setting_key()).ok().flatten()
 }
 
 /// 疎通テストの結果を [`KeyStatus`] に反映する（仕様書 7.5.5）。
@@ -32,10 +30,10 @@ async fn verify_into_status(provider: Provider, mut status: KeyStatus) -> KeySta
         return status;
     }
 
-    let llm = match provider_impl(provider, None) {
+    let llm = match llm::build(provider, model_for(provider)) {
         Ok(llm) => llm,
         Err(why) => {
-            status.error = Some(why);
+            status.error = Some(why.to_string());
             return status;
         }
     };
@@ -43,7 +41,7 @@ async fn verify_into_status(provider: Provider, mut status: KeyStatus) -> KeySta
     match llm.verify().await {
         Ok(()) => {
             status.verified = true;
-            status.last_verified_at = Some(chrono_now());
+            status.last_verified_at = Some(now_unix());
             status.error = None;
         }
         Err(LlmError::Auth(_)) => {
@@ -55,14 +53,27 @@ async fn verify_into_status(provider: Provider, mut status: KeyStatus) -> KeySta
             status.error = Some("保存済み（レート制限のため未検証）".into());
         }
         Err(other) => {
+            // モデル名が違う場合はここに来る。API の返答をそのまま見せないと
+            // 何を直せばよいか分からない。キーは本文に載らない。
             status.verified = false;
-            status.error = Some(format!("保存済み（未検証）: {other}"));
+            status.error = Some(format!("保存済み（未検証）: {}", brief(&other)));
         }
     }
     status
 }
 
-fn chrono_now() -> i64 {
+/// API の応答を UI に出せる長さに縮める。
+fn brief(err: &LlmError) -> String {
+    let msg = err.message();
+    let head: String = msg.chars().take(200).collect();
+    if head.trim().is_empty() {
+        err.to_string()
+    } else {
+        head
+    }
+}
+
+fn now_unix() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -108,10 +119,54 @@ pub async fn verify_api_key(provider: String) -> Result<KeyStatus, String> {
     Ok(verify_into_status(p, status).await)
 }
 
-/// キーが 1 つも検証できていない間は自動送信を有効にできない（仕様書 7.5.4）。
+/// キーが 1 つも設定されていない間は自動送信を有効にできない（仕様書 7.5.4）。
 #[tauri::command]
 pub fn can_enable_auto_send() -> bool {
     Provider::with_keys()
         .into_iter()
         .any(credentials::is_configured)
+}
+
+// MARK: モデル設定
+
+#[derive(Serialize)]
+pub struct ModelSetting {
+    provider: String,
+    /// 実際に使う値。未設定なら既定値が入る。
+    model: String,
+    /// 既定値。UI のプレースホルダに使う。
+    default_model: String,
+    /// ユーザーが明示的に設定しているか。
+    customized: bool,
+}
+
+#[tauri::command]
+pub fn list_models() -> Result<Vec<ModelSetting>, String> {
+    let store = Store::open_default().map_err(|e| e.to_string())?;
+    Provider::with_keys()
+        .into_iter()
+        .map(|p| {
+            let saved = store
+                .get_kv(&p.model_setting_key())
+                .map_err(|e| e.to_string())?;
+            Ok(ModelSetting {
+                provider: p.id().to_string(),
+                model: saved
+                    .clone()
+                    .unwrap_or_else(|| p.default_model().to_string()),
+                default_model: p.default_model().to_string(),
+                customized: saved.is_some(),
+            })
+        })
+        .collect()
+}
+
+/// モデル名を設定する。空文字を渡すと既定値に戻す。
+#[tauri::command]
+pub fn set_model(provider: String, model: String) -> Result<(), String> {
+    let p = parse_provider(&provider)?;
+    let store = Store::open_default().map_err(|e| e.to_string())?;
+    store
+        .set_kv(&p.model_setting_key(), model.trim())
+        .map_err(|e| e.to_string())
 }

@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
-import { listKeyStatuses, type KeyStatus } from "./api";
+import { listKeyStatuses, listModels, type KeyStatus, type ModelSetting } from "./api";
 import ApiKeyRow from "./components/ApiKeyRow";
 
 export default function App() {
   const [statuses, setStatuses] = useState<KeyStatus[] | null>(null);
+  const [models, setModels] = useState<ModelSetting[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      setStatuses(await listKeyStatuses());
+      const [s, m] = await Promise.all([listKeyStatuses(), listModels()]);
+      setStatuses(s);
+      setModels(m);
       setError(null);
     } catch (e) {
       setError(String(e));
@@ -43,9 +46,17 @@ export default function App() {
               <ApiKeyRow
                 key={s.provider}
                 status={s}
+                model={models.find((m) => m.provider === s.provider)}
                 onChange={(next) =>
                   setStatuses((prev) =>
                     (prev ?? []).map((x) => (x.provider === next.provider ? next : x)),
+                  )
+                }
+                onModelChange={(provider, model) =>
+                  setModels((prev) =>
+                    prev.map((m) =>
+                      m.provider === provider ? { ...m, model, customized: true } : m,
+                    ),
                   )
                 }
               />

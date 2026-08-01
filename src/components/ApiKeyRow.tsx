@@ -2,15 +2,19 @@ import { useState } from "react";
 import {
   deleteApiKey,
   setApiKey,
+  setModel,
   verifyApiKey,
   PROVIDER_LABELS,
   type KeyStatus,
+  type ModelSetting,
   type ProviderId,
 } from "../api";
 
 type Props = {
   status: KeyStatus;
+  model: ModelSetting | undefined;
   onChange: (next: KeyStatus) => void;
+  onModelChange: (provider: string, model: string) => void;
 };
 
 type Phase = "idle" | "saving" | "verifying" | "deleting";
@@ -21,10 +25,11 @@ type Phase = "idle" | "saving" | "verifying" | "deleting";
  * 入力欄の値は保存に成功した時点で即座に空にする。
  * React の state にキーを残さない。
  */
-export default function ApiKeyRow({ status, onChange }: Props) {
+export default function ApiKeyRow({ status, model, onChange, onModelChange }: Props) {
   const [draft, setDraft] = useState("");
   const [phase, setPhase] = useState<Phase>("idle");
   const [failure, setFailure] = useState<string | null>(null);
+  const [modelDraft, setModelDraft] = useState<string | null>(null);
 
   const provider = status.provider as ProviderId;
   const busy = phase !== "idle";
@@ -93,7 +98,34 @@ export default function ApiKeyRow({ status, onChange }: Props) {
       )}
 
       {(status.error || failure) && (
-        <p className="mt-1 text-xs text-red-600 dark:text-red-400">{failure ?? status.error}</p>
+        <p className="mt-1 text-xs break-words text-red-600 dark:text-red-400">
+          {failure ?? status.error}
+        </p>
+      )}
+
+      {model && (
+        <label className="mt-2 flex items-center gap-2">
+          <span className="shrink-0 text-xs text-neutral-500 dark:text-neutral-400">モデル</span>
+          <input
+            type="text"
+            value={modelDraft ?? model.model}
+            placeholder={model.default_model}
+            spellCheck={false}
+            autoCorrect="off"
+            autoCapitalize="off"
+            onChange={(e) => setModelDraft(e.target.value)}
+            onBlur={async () => {
+              if (modelDraft === null || modelDraft === model.model) {
+                setModelDraft(null);
+                return;
+              }
+              await setModel(provider, modelDraft);
+              onModelChange(provider, modelDraft.trim() || model.default_model);
+              setModelDraft(null);
+            }}
+            className="min-w-0 flex-1 rounded border border-neutral-300 px-2 py-1 font-mono text-xs dark:border-neutral-600 dark:bg-neutral-800"
+          />
+        </label>
       )}
 
       {status.configured ? (

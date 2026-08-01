@@ -664,6 +664,24 @@ impl Store {
         })
     }
 
+    // MARK: kv
+
+    pub fn get_kv(&self, key: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row("SELECT value FROM kv WHERE key = ?1", [key], |r| r.get(0))
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn set_kv(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO kv (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )?;
+        Ok(())
+    }
+
     fn handles_of(&self, target_id: i64) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
             "SELECT chat_identifier FROM target_handles WHERE target_id = ?1 ORDER BY chat_identifier",

@@ -21,6 +21,8 @@ pub fn run() {
             commands::delete_api_key,
             commands::verify_api_key,
             commands::can_enable_auto_send,
+            commands::list_models,
+            commands::set_model,
         ])
         .build(tauri::generate_context!())
         .expect("Tauri アプリを初期化できない")

@@ -45,3 +45,19 @@ export function deleteApiKey(provider: ProviderId): Promise<void> {
 export function canEnableAutoSend(): Promise<boolean> {
   return invoke("can_enable_auto_send");
 }
+
+export type ModelSetting = {
+  provider: string;
+  model: string;
+  default_model: string;
+  customized: boolean;
+};
+
+export function listModels(): Promise<ModelSetting[]> {
+  return invoke("list_models");
+}
+
+/** 空文字を渡すと既定値に戻る。 */
+export function setModel(provider: ProviderId, model: string): Promise<void> {
+  return invoke("set_model", { provider, model });
+}

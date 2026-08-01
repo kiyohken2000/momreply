@@ -184,6 +184,7 @@ pub async fn draft_reply(
         None => None,
     };
     let kind = if retry.is_some() { "regenerate" } else { "initial" };
+    let mode = prompt::ReplyMode::parse(&target.reply_mode);
 
     let ctx = prompt::Context {
         display_name: target.display_name.clone(),
@@ -200,6 +201,7 @@ pub async fn draft_reply(
         now: chrono::Local::now().format("%Y年%-m月%-d日(%a) %H:%M").to_string(),
         length_instruction: preset.instruction().to_string(),
         retry,
+        mode,
     };
 
     let llm = llm::build(provider, Some(model.clone())).map_err(anyhow::Error::from)?;
@@ -229,12 +231,18 @@ pub async fn draft_reply(
         error: None,
     })?;
 
+    // おまかせモードでは人に聞かない。合図が出ても本文だけ使う。
+    // 放置できることが目的なので、ここで止めては意味がない。
+    if mode == prompt::ReplyMode::Vague && prompt::is_need_info(&response.text) {
+        eprintln!("警告: おまかせモードなのに材料不足の合図が返った。合図を落として続行する");
+    }
+
     // モデルが「材料が足りない」と言ってきた場合。
     //
     // 答えられる分だけ書かれていることがある。その場合は本文を残して
     // 確認に回す。人は足りない部分を書き足すだけで済み、答えられた
     // ところまで捨てずに済む。**自動送信はしない。**
-    if prompt::is_need_info(&response.text) {
+    if mode == prompt::ReplyMode::Precise && prompt::is_need_info(&response.text) {
         store.record_questions(target.id, message.rowid, &found)?;
         let partial = prompt::strip_need_info(&response.text);
         let asked: Vec<String> = found.iter().map(|q| q.text.clone()).collect();
@@ -258,7 +266,8 @@ pub async fn draft_reply(
         });
     }
 
-    let (text, held) = match clean(&response.text, preset.hard_max_length()) {
+    let cleaned_source = prompt::strip_need_info(&response.text);
+    let (text, held) = match clean(&cleaned_source, preset.hard_max_length()) {
         Cleaned::Ok(t) => (t, false),
         Cleaned::TooLong { text, chars } => {
             // 送らずに確認へ倒す。長さの暴走は事故に直結する。
@@ -284,21 +293,38 @@ pub async fn draft_reply(
 }
 
 /// 指数バックオフで最大 3 回（仕様書 6.2）。
+///
+/// # 待ち時間を種類で変える
+///
+/// レート制限は**1 分あたり**で課されることが多い。500ms から始めると
+/// 3 回目まで含めても 2 秒に満たず、制限が明ける前に諦めることになる。
+/// 実際に Gemini でそうなった。ネットワークの一時エラーとは別扱いにする。
 async fn call_with_retry(
     llm: &dyn llm::LlmProvider,
     req: CompletionRequest,
 ) -> Result<llm::CompletionResponse> {
-    let mut delay = std::time::Duration::from_millis(500);
+    const NETWORK_BASE: std::time::Duration = std::time::Duration::from_millis(500);
+    const RATE_LIMIT_BASE: std::time::Duration = std::time::Duration::from_secs(20);
+
     let mut last: Option<LlmError> = None;
 
-    for attempt in 0..3 {
+    for attempt in 0..3u32 {
         match llm.complete(req.clone()).await {
             Ok(r) => return Ok(r),
             Err(e) if e.is_retryable() => {
-                eprintln!("{}回目の呼び出しに失敗（再試行する）: {e}", attempt + 1);
+                let base = if matches!(e, LlmError::RateLimit(_)) {
+                    RATE_LIMIT_BASE
+                } else {
+                    NETWORK_BASE
+                };
+                let delay = base * 2u32.pow(attempt);
+                eprintln!(
+                    "{}回目の呼び出しに失敗（{}秒後に再試行）: {e}",
+                    attempt + 1,
+                    delay.as_secs().max(1)
+                );
                 last = Some(e);
                 tokio::time::sleep(delay).await;
-                delay *= 2;
             }
             // Auth / InvalidOutput はリトライしても同じ結果になる。
             Err(e) => return Err(e.into()),

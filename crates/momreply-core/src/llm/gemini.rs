@@ -17,6 +17,16 @@ use super::{
 const BASE: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// 推論・思考のための余白。
+///
+/// 推論モデルは本文を書く前に内部でトークンを使う。要求した文字数ぶん
+/// しか枠を与えないと、本文に到達する前に上限へ当たり、finish_reason が
+/// length で中身が空のまま返る。実機で踏んだ。
+///
+/// **上限は費用ではなく天井**なので、広く取っても実際に使った分しか
+/// 課金されない。長さの暴走は hard_max_length 側で止める。
+const REASONING_HEADROOM: u32 = 6000;
+
 /// 既定モデル。設定で上書きできる（仕様書 7.2「ハードコードしない」）。
 ///
 /// **この名前が現在も有効かは疎通テストで確かめること。** 存在しない
@@ -148,7 +158,7 @@ impl LlmProvider for Gemini {
             "systemInstruction": { "parts": [{ "text": req.system }] },
             "contents": to_contents(&req.messages),
             "generationConfig": {
-                "maxOutputTokens": req.max_tokens,
+                "maxOutputTokens": req.max_tokens + REASONING_HEADROOM,
                 "temperature": req.temperature,
             },
         });

@@ -18,7 +18,7 @@ const PENDING_COLUMNS: &str = "SELECT id, question, context, kind, answer, chat_
      created_at, stance FROM pending_questions";
 
 /// スキーマバージョン。`PRAGMA user_version` で管理する。
-const SCHEMA_VERSION: i32 = 4;
+const SCHEMA_VERSION: i32 = 5;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS targets (
@@ -29,6 +29,9 @@ CREATE TABLE IF NOT EXISTS targets (
   -- 既定は OFF。配布時に自動送信が既定で走る状態にしてはいけない。
   auto_send     INTEGER NOT NULL DEFAULT 0,
   reply_preset  TEXT    NOT NULL DEFAULT 'mirror',
+  -- precise: 質問に具体的に答える。材料が無ければ人に聞く。
+  -- vague:   明確な回答を避け、当たり障りのない長文で返す。人に聞かない。
+  reply_mode    TEXT    NOT NULL DEFAULT 'precise',
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL
 );
@@ -180,6 +183,8 @@ pub struct Target {
     pub enabled: bool,
     pub auto_send: bool,
     pub reply_preset: String,
+    /// `precise` | `vague`。[`crate::pipeline::ReplyMode`] を参照。
+    pub reply_mode: String,
     pub handles: Vec<String>,
     pub last_seen_rowid: Option<i64>,
 }
@@ -350,6 +355,12 @@ impl Store {
             self.conn
                 .execute("ALTER TABLE pending_questions ADD COLUMN context TEXT", [])?;
         }
+        if !self.has_column("targets", "reply_mode")? {
+            self.conn.execute(
+                "ALTER TABLE targets ADD COLUMN reply_mode TEXT NOT NULL DEFAULT 'precise'",
+                [],
+            )?;
+        }
         if !self.has_column("pending_questions", "stance")? {
             self.conn.execute(
                 "ALTER TABLE pending_questions ADD COLUMN stance TEXT NOT NULL DEFAULT 'fact'",
@@ -445,7 +456,7 @@ impl Store {
             .conn
             .query_row(
                 "SELECT t.id, t.slug, t.display_name, t.enabled, t.auto_send, t.reply_preset,
-                        s.last_seen_rowid
+                        s.last_seen_rowid, t.reply_mode
                  FROM targets t
                  LEFT JOIN target_state s ON s.target_id = t.id
                  WHERE t.id = ?1",
@@ -477,7 +488,7 @@ impl Store {
     pub fn list_targets(&self) -> Result<Vec<Target>> {
         let mut stmt = self.conn.prepare(
             "SELECT t.id, t.slug, t.display_name, t.enabled, t.auto_send, t.reply_preset,
-                    s.last_seen_rowid
+                    s.last_seen_rowid, t.reply_mode
              FROM targets t
              LEFT JOIN target_state s ON s.target_id = t.id
              ORDER BY t.id",
@@ -529,6 +540,15 @@ impl Store {
         self.conn.execute(
             "UPDATE target_state SET last_seen_rowid = ?2 WHERE target_id = ?1",
             (target_id, rowid),
+        )?;
+        Ok(())
+    }
+
+    /// おまかせモードの切り替え。
+    pub fn set_reply_mode(&self, target_id: i64, mode: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE targets SET reply_mode = ?2, updated_at = ?3 WHERE id = ?1",
+            (target_id, mode, now_unix()),
         )?;
         Ok(())
     }
@@ -1199,6 +1219,7 @@ impl Store {
             auto_send: row.get::<_, i64>(4)? != 0,
             reply_preset: row.get(5)?,
             last_seen_rowid: row.get(6)?,
+            reply_mode: row.get(7)?,
             handles: Vec::new(),
         })
     }

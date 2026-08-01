@@ -17,6 +17,16 @@ use super::{
 const ENDPOINT: &str = "https://api.openai.com/v1/chat/completions";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// 推論・思考のための余白。
+///
+/// 推論モデルは本文を書く前に内部でトークンを使う。要求した文字数ぶん
+/// しか枠を与えないと、本文に到達する前に上限へ当たり、finish_reason が
+/// length で中身が空のまま返る。実機で踏んだ。
+///
+/// **上限は費用ではなく天井**なので、広く取っても実際に使った分しか
+/// 課金されない。長さの暴走は hard_max_length 側で止める。
+const REASONING_HEADROOM: u32 = 6000;
+
 /// 既定モデル。設定で上書きできる（仕様書 7.2「ハードコードしない」）。
 ///
 /// **この名前が現在も有効かは疎通テストで確かめること。**
@@ -120,6 +130,12 @@ fn to_messages(system: &str, messages: &[ChatMessage]) -> Vec<serde_json::Value>
     out
 }
 
+/// `temperature` を理由に 400 が返ったか。
+fn rejects_temperature(body: &str) -> bool {
+    body.contains("temperature")
+        && (body.contains("unsupported_value") || body.contains("does not support"))
+}
+
 fn extract_text(parsed: &ChatResponse) -> String {
     parsed
         .choices
@@ -137,14 +153,27 @@ impl LlmProvider for Openai {
 
     async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, LlmError> {
         // 新しめのモデルは max_tokens を受け付けず max_completion_tokens を要求する。
-        let body = json!({
+        let base = json!({
             "model": req.model,
             "messages": to_messages(&req.system, &req.messages),
-            "max_completion_tokens": req.max_tokens,
-            "temperature": req.temperature,
+            "max_completion_tokens": req.max_tokens + REASONING_HEADROOM,
         });
 
-        let (status, text, latency_ms) = self.post(body, REQUEST_TIMEOUT).await?;
+        let mut body = base.clone();
+        body["temperature"] = json!(req.temperature);
+
+        let (mut status, mut text, mut latency_ms) = self.post(body, REQUEST_TIMEOUT).await?;
+
+        // 既定値以外の temperature を受け付けないモデルがある。
+        // どのモデルが対応しているかを埋め込むと、モデルが増えるたびに
+        // 古くなる。拒否されたら黙って外して 1 度だけやり直す。
+        if status == 400 && rejects_temperature(&text) {
+            let (s2, t2, l2) = self.post(base, REQUEST_TIMEOUT).await?;
+            status = s2;
+            text = t2;
+            latency_ms = l2;
+        }
+
         if status != 200 {
             return Err(classify_status(status, &text));
         }
@@ -247,6 +276,23 @@ mod tests {
     fn an_empty_choice_list_is_not_a_panic() {
         let parsed: ChatResponse = serde_json::from_str(r#"{"choices": []}"#).unwrap();
         assert_eq!(extract_text(&parsed), "");
+    }
+
+    /// temperature を拒否されたことを検出できること。
+    /// 見落とすと、gpt-5 系で生成が常に失敗する。
+    #[test]
+    fn a_temperature_rejection_is_recognised() {
+        let body = r#"{"error":{"message":"Unsupported value: 'temperature' does not support 0.8 with this model. Only the default (1) value is supported.","type":"invalid_request_error","param":"temperature","code":"unsupported_value"}}"#;
+        assert!(rejects_temperature(body));
+    }
+
+    /// 別の理由の 400 で temperature を外して再送しても意味が無い。
+    #[test]
+    fn other_errors_do_not_look_like_a_temperature_rejection() {
+        assert!(!rejects_temperature(
+            r#"{"error":{"message":"model not found","code":"model_not_found"}}"#
+        ));
+        assert!(!rejects_temperature(""));
     }
 
     /// 仕様書 7.5.5 の字面（max_tokens: 1）に戻すと、推論モデルで

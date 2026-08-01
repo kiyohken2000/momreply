@@ -210,6 +210,9 @@ enum TargetCmd {
         /// 既定の長さ（mirror|short|normal|long|very_long）。
         #[arg(long)]
         preset: Option<String>,
+        /// 返信の方針。precise=具体的に答える / vague=曖昧に返して人に聞かない。
+        #[arg(long)]
+        mode: Option<String>,
     },
 }
 
@@ -1002,17 +1005,31 @@ fn cmd_target(chat_db: &rusqlite::Connection, cmd: TargetCmd) -> Result<()> {
             println!("削除: {} ({})", target.display_name, target.slug);
         }
 
-        TargetCmd::Set { slug, preset } => {
+        TargetCmd::Set { slug, preset, mode } => {
             let target = store
                 .target_by_slug(&slug)?
                 .with_context(|| format!("'{slug}' は登録されていない"))?;
-            if let Some(p) = preset {
-                LengthPreset::parse(&p).with_context(|| format!("不明な長さ指定: {p}"))?;
-                store.set_reply_preset(target.id, &p)?;
-                println!("{} の既定の長さ: {p}", target.display_name);
-            } else {
-                println!("{} の既定の長さ: {}", target.display_name, target.reply_preset);
+            if let Some(p) = &preset {
+                LengthPreset::parse(p).with_context(|| format!("不明な長さ指定: {p}"))?;
+                store.set_reply_preset(target.id, p)?;
             }
+            if let Some(m) = &mode {
+                if m != "precise" && m != "vague" {
+                    bail!("mode は precise か vague");
+                }
+                store.set_reply_mode(target.id, m)?;
+            }
+            let t = store.target_by_slug(&slug)?.unwrap();
+            println!("{}", t.display_name);
+            println!("  長さ: {}", t.reply_preset);
+            println!(
+                "  方針: {}",
+                if t.reply_mode == "vague" {
+                    "vague（曖昧に返す。人に聞かない）"
+                } else {
+                    "precise（具体的に答える。材料が無ければ人に聞く）"
+                }
+            );
         }
 
         TargetCmd::Pending { slug } => {

@@ -47,6 +47,35 @@ pub fn strip_need_info(text: &str) -> String {
         .to_string()
 }
 
+/// 返信の方針。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplyMode {
+    /// 質問に具体的に答える。材料が無ければ人に聞く。
+    Precise,
+    /// 明確な回答を避け、当たり障りのない長文で返す。
+    ///
+    /// 人に一切聞かないので放置できる。断定しないぶん、誤った事実を
+    /// 送ってしまう危険は `Precise` より小さい。
+    /// 代わりに、相手が求めている答えは得られない。
+    Vague,
+}
+
+impl ReplyMode {
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "vague" => Self::Vague,
+            _ => Self::Precise,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Precise => "precise",
+            Self::Vague => "vague",
+        }
+    }
+}
+
 /// 生成に必要な材料。
 pub struct Context {
     /// 相手の表示名。
@@ -73,6 +102,7 @@ pub struct Context {
     pub length_instruction: String,
     /// 再生成のときだけ入る（仕様書 8.3）。
     pub retry: Option<Retry>,
+    pub mode: ReplyMode,
 }
 
 /// 質問への対応。
@@ -123,23 +153,50 @@ pub fn system(ctx: &Context) -> String {
     );
 
     // ここがこのアプリの肝。仕様書 8.1 から意図的に変えている箇所。
-    s.push_str(&format!(
-        "# 質問には必ず答える\n\
-         相手の質問をはぐらかさない。「確認してみる」「また連絡する」で\n\
-         済ませない。答えは下の『答えるための材料』に書いてある。\n\
-         材料に書いてあることは、迷わず言い切る。\n\n\
-         # 材料が足りないとき\n\
-         質問に答えるための材料が下に無い場合は、**推測で書かない。**\n\
-         代わりに次のようにする。\n\
-         \n\
-         - 答えられる質問が 1 つでもあるなら、**その分は普通に答える。**\n\
-           そのうえで、最後の行に {NEED_INFO} を置く\n\
-         - 1 つも答えられないなら、{NEED_INFO} とだけ出力する\n\
-         \n\
-         この記号は人間への合図で、相手には送られない。\n\
-         答えられる部分まで捨てる必要はない。\n\
-         材料がそろっている質問だけの場合は、この記号を使わない。\n\n"
-    ));
+    match ctx.mode {
+        ReplyMode::Precise => s.push_str(&format!(
+            "# 質問には必ず答える\n\
+             相手の質問をはぐらかさない。「確認してみる」「また連絡する」で\n\
+             済ませない。答えは下の『答えるための材料』に書いてある。\n\
+             材料に書いてあることは、迷わず言い切る。\n\n\
+             # 材料が足りないとき\n\
+             質問に答えるための材料が下に無い場合は、**推測で書かない。**\n\
+             代わりに次のようにする。\n\
+             \n\
+             - 答えられる質問が 1 つでもあるなら、**その分は普通に答える。**\n\
+               そのうえで、最後の行に {NEED_INFO} を置く\n\
+             - 1 つも答えられないなら、{NEED_INFO} とだけ出力する\n\
+             \n\
+             この記号は人間への合図で、相手には送られない。\n\
+             答えられる部分まで捨てる必要はない。\n\
+             材料がそろっている質問だけの場合は、この記号を使わない。\n\n"
+        )),
+
+        // 人に聞かずに済ませるための指示。断定させないことで、
+        // 誤った事実を自動送信する危険を下げている。
+        ReplyMode::Vague => s.push_str(
+            "# 答え方（重要）\n\
+             質問されても、**具体的な答えを出さない。**\n\
+             ただし、そっけなくしない。相手の話をちゃんと受け止めて、\n\
+             たっぷり書く。読んで冷たく感じない文にすること。\n\
+             \n\
+             守ること:\n\
+             - 日付・時刻・金額・可否を確定させない\n\
+             - 約束をしない。「行く」「行かない」「やる」と言い切らない\n\
+             - 断ることも承諾することもしない\n\
+             - 『答えるための材料』に書いてあることだけは、そのまま言ってよい\n\
+             - 書いていないことは作らない。知らないことは触れない\n\
+             \n\
+             やること:\n\
+             - 相手が書いてきた話題に触れて、受け止めたと分かるようにする\n\
+               （ただし内容の是非は判断しない）\n\
+             - 近況めいた話、体調を気づかう言葉、当たり障りのない話を混ぜる\n\
+             - 相手が続きを書きやすいように、軽い問いかけで終えてもよい\n\
+             \n\
+             人間に確認を求めてはいけない。合図は使わない。\n\
+             どんな内容でも、この方針で返信を書ききること。\n\n",
+        ),
+    }
 
     s.push_str(
         "# 文体と内容の使い分け（重要）\n\
@@ -248,13 +305,23 @@ fn final_turn(ctx: &Context) -> String {
     let mut s = format!("<{}> {}", ctx.display_name, ctx.incoming);
 
     if !ctx.questions.is_empty() {
-        s.push_str("\n\n（この中の質問に必ず答えること:");
-        for q in &ctx.questions {
-            s.push_str(&format!("\n・{}", q.text));
+        match ctx.mode {
+            ReplyMode::Precise => {
+                s.push_str("\n\n（この中の質問に必ず答えること:");
+                for q in &ctx.questions {
+                    s.push_str(&format!("\n・{}", q.text));
+                }
+                s.push_str(&format!(
+                    "\n材料が無くて答えられない場合は {NEED_INFO} とだけ出力する）"
+                ));
+            }
+            // 質問があることは伝えるが、答えさせない。
+            // 末尾の指示のほうが効くので、ここでも方針を繰り返す。
+            ReplyMode::Vague => {
+                s.push_str("\n\n（質問が含まれているが、確定的な答えは出さないこと。");
+                s.push_str("受け止めたことは伝えつつ、日付・可否・約束は避ける）");
+            }
         }
-        s.push_str(&format!(
-            "\n材料が無くて答えられない場合は {NEED_INFO} とだけ出力する）"
-        ));
     }
 
     s.push_str(&format!("\n\n（{}）", ctx.length_instruction));
@@ -297,6 +364,14 @@ mod tests {
             now: "2026年8月1日(土) 20:00".into(),
             length_instruction: "母のメッセージと同じくらいの長さで返す。".into(),
             retry: None,
+            mode: ReplyMode::Precise,
+        }
+    }
+
+    fn vague_ctx() -> Context {
+        Context {
+            mode: ReplyMode::Vague,
+            ..ctx()
         }
     }
 
@@ -379,6 +454,41 @@ mod tests {
         assert!(last.contains("保険証はある？"));
         assert!(last.contains("必ず答えること"));
         assert!(last.contains("同じくらいの長さ"));
+    }
+
+    // MARK: おまかせモード
+
+    /// 放置できることが目的なので、人への確認を求めさせない。
+    #[test]
+    fn vague_mode_never_asks_the_human() {
+        let s = system(&vague_ctx());
+        assert!(!s.contains(NEED_INFO));
+        assert!(s.contains("人間に確認を求めてはいけない"));
+        assert!(!final_turn(&vague_ctx()).contains(NEED_INFO));
+    }
+
+    /// 曖昧に返すのは、確定させないため。ここが緩むと意味が無い。
+    #[test]
+    fn vague_mode_forbids_commitments() {
+        let s = system(&vague_ctx());
+        assert!(s.contains("具体的な答えを出さない"));
+        assert!(s.contains("約束をしない"));
+        assert!(s.contains("日付・時刻・金額・可否を確定させない"));
+    }
+
+    /// そっけない一言は、実データ上いちばん事態を悪くしていた形。
+    #[test]
+    fn vague_mode_still_requires_warmth_and_length() {
+        let s = system(&vague_ctx());
+        assert!(s.contains("そっけなくしない"));
+        assert!(s.contains("たっぷり書く"));
+    }
+
+    /// 曖昧でも、作り話をしてよいわけではない。
+    #[test]
+    fn vague_mode_still_forbids_invention() {
+        let s = system(&vague_ctx());
+        assert!(s.contains("書いていないことは作らない"));
     }
 
     /// 材料が無いときは推測させず、合図を返させる。

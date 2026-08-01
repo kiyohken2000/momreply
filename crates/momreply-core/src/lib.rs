@@ -4,6 +4,7 @@
 //! chat.db へのアクセス経路を [`imessage`] に一本化する。
 
 pub mod imessage;
+pub mod llm;
 pub mod paths;
 pub mod profile;
 pub mod questions;

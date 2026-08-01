@@ -40,7 +40,7 @@ impl Anthropic {
         &self,
         body: serde_json::Value,
         timeout: Duration,
-    ) -> Result<(u16, String), LlmError> {
+    ) -> Result<(u16, String, u64), LlmError> {
         let client = http_client(timeout)?;
 
         // キーはこのクロージャの外に出さない（仕様書 7.5.2）。
@@ -54,6 +54,9 @@ impl Anthropic {
         })
         .map_err(|e| LlmError::Auth(e.to_string()))?;
 
+        // 計測はここから。鍵の取り出しは Keychain の許可待ちで
+        // 何分も止まりうるので、含めるとレイテンシが意味を失う。
+        let started = Instant::now();
         let response = request.send().await.map_err(|e| {
             // エラー表示にヘッダを含めない（x-api-key が乗るため）。
             LlmError::Network(e.without_url().to_string())
@@ -64,7 +67,7 @@ impl Anthropic {
             .text()
             .await
             .map_err(|e| LlmError::Network(e.without_url().to_string()))?;
-        Ok((status, text))
+        Ok((status, text, started.elapsed().as_millis() as u64))
     }
 }
 
@@ -102,7 +105,6 @@ impl LlmProvider for Anthropic {
     }
 
     async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, LlmError> {
-        let started = Instant::now();
         let body = json!({
             "model": req.model,
             "system": req.system,
@@ -111,7 +113,7 @@ impl LlmProvider for Anthropic {
             "temperature": req.temperature,
         });
 
-        let (status, text) = self.post(body, REQUEST_TIMEOUT).await?;
+        let (status, text, latency_ms) = self.post(body, REQUEST_TIMEOUT).await?;
         if status != 200 {
             return Err(classify_status(status, &text));
         }
@@ -135,7 +137,7 @@ impl LlmProvider for Anthropic {
             text: output,
             input_tokens: parsed.usage.as_ref().and_then(|u| u.input_tokens),
             output_tokens: parsed.usage.as_ref().and_then(|u| u.output_tokens),
-            latency_ms: started.elapsed().as_millis() as u64,
+            latency_ms,
         })
     }
 
@@ -147,7 +149,7 @@ impl LlmProvider for Anthropic {
             "max_tokens": 1,
         });
 
-        let (status, text) = self.post(body, VERIFY_TIMEOUT).await?;
+        let (status, text, _) = self.post(body, VERIFY_TIMEOUT).await?;
         if status == 200 {
             return Ok(());
         }

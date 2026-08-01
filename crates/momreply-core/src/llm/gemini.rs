@@ -43,7 +43,7 @@ impl Gemini {
         model: &str,
         body: serde_json::Value,
         timeout: Duration,
-    ) -> Result<(u16, String), LlmError> {
+    ) -> Result<(u16, String, u64), LlmError> {
         let client = http_client(timeout)?;
         let url = format!("{BASE}/{model}:generateContent");
 
@@ -58,6 +58,9 @@ impl Gemini {
         })
         .map_err(|e| LlmError::Auth(e.to_string()))?;
 
+        // 計測はここから。鍵の取り出しは Keychain の許可待ちで
+        // 何分も止まりうるので、含めるとレイテンシが意味を失う。
+        let started = Instant::now();
         let response = request
             .send()
             .await
@@ -68,7 +71,7 @@ impl Gemini {
             .text()
             .await
             .map_err(|e| LlmError::Network(e.without_url().to_string()))?;
-        Ok((status, text))
+        Ok((status, text, started.elapsed().as_millis() as u64))
     }
 }
 
@@ -141,7 +144,6 @@ impl LlmProvider for Gemini {
     }
 
     async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, LlmError> {
-        let started = Instant::now();
         let body = json!({
             "systemInstruction": { "parts": [{ "text": req.system }] },
             "contents": to_contents(&req.messages),
@@ -151,7 +153,7 @@ impl LlmProvider for Gemini {
             },
         });
 
-        let (status, text) = self.post(&req.model, body, REQUEST_TIMEOUT).await?;
+        let (status, text, latency_ms) = self.post(&req.model, body, REQUEST_TIMEOUT).await?;
         if status != 200 {
             return Err(classify_status(status, &text));
         }
@@ -180,7 +182,7 @@ impl LlmProvider for Gemini {
                 .usage_metadata
                 .as_ref()
                 .and_then(|u| u.candidates_token_count),
-            latency_ms: started.elapsed().as_millis() as u64,
+            latency_ms,
         })
     }
 
@@ -194,7 +196,7 @@ impl LlmProvider for Gemini {
             "generationConfig": { "maxOutputTokens": 1 },
         });
 
-        let (status, text) = self.post(&self.model, body, VERIFY_TIMEOUT).await?;
+        let (status, text, _) = self.post(&self.model, body, VERIFY_TIMEOUT).await?;
         if status == 200 {
             return Ok(());
         }

@@ -53,7 +53,7 @@ impl Openai {
         &self,
         body: serde_json::Value,
         timeout: Duration,
-    ) -> Result<(u16, String), LlmError> {
+    ) -> Result<(u16, String, u64), LlmError> {
         let client = http_client(timeout)?;
 
         let request = credentials::with_key(Provider::Openai, |key| {
@@ -65,6 +65,9 @@ impl Openai {
         })
         .map_err(|e| LlmError::Auth(e.to_string()))?;
 
+        // 計測はここから。鍵の取り出しは Keychain の許可待ちで
+        // 何分も止まりうるので、含めるとレイテンシが意味を失う。
+        let started = Instant::now();
         let response = request
             .send()
             .await
@@ -75,7 +78,7 @@ impl Openai {
             .text()
             .await
             .map_err(|e| LlmError::Network(e.without_url().to_string()))?;
-        Ok((status, text))
+        Ok((status, text, started.elapsed().as_millis() as u64))
     }
 }
 
@@ -133,7 +136,6 @@ impl LlmProvider for Openai {
     }
 
     async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, LlmError> {
-        let started = Instant::now();
         // 新しめのモデルは max_tokens を受け付けず max_completion_tokens を要求する。
         let body = json!({
             "model": req.model,
@@ -142,7 +144,7 @@ impl LlmProvider for Openai {
             "temperature": req.temperature,
         });
 
-        let (status, text) = self.post(body, REQUEST_TIMEOUT).await?;
+        let (status, text, latency_ms) = self.post(body, REQUEST_TIMEOUT).await?;
         if status != 200 {
             return Err(classify_status(status, &text));
         }
@@ -166,7 +168,7 @@ impl LlmProvider for Openai {
             text: output,
             input_tokens: parsed.usage.as_ref().and_then(|u| u.prompt_tokens),
             output_tokens: parsed.usage.as_ref().and_then(|u| u.completion_tokens),
-            latency_ms: started.elapsed().as_millis() as u64,
+            latency_ms,
         })
     }
 
@@ -182,7 +184,7 @@ impl LlmProvider for Openai {
             "max_completion_tokens": VERIFY_MAX_TOKENS,
         });
 
-        let (status, text) = self.post(body, VERIFY_TIMEOUT).await?;
+        let (status, text, _) = self.post(body, VERIFY_TIMEOUT).await?;
         if status == 200 {
             return Ok(());
         }

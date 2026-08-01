@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "ポップオーバーに必要な最小限の権限",
+  "windows": ["popover"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-hide",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
+    "positioner:default"
+  ]
+}

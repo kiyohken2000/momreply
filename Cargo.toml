@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/momreply-core", "crates/momreply-cli"]
+members = ["crates/momreply-core", "crates/momreply-cli", "src-tauri"]
 
 [workspace.package]
 edition = "2021"

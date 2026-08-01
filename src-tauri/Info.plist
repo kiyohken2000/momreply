@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- メニューバー常駐。Dock にアイコンを出さない。 -->
+	<key>LSUIElement</key>
+	<true/>
+
+	<!--
+	  オートメーション権限のダイアログを出すために必須（仕様書 10.1）。
+	  記載が無いとダイアログが出ないまま AppleScript の送信が失敗する。
+	-->
+	<key>NSAppleEventsUsageDescription</key>
+	<string>返信メッセージを送信するために、メッセージ.app を操作します。</string>
+</dict>
+</plist>

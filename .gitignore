@@ -1,6 +1,12 @@
 /target
 .DS_Store
 
+# フロントエンド
+node_modules/
+/dist/
+# Tauri が生成するスキーマ・権限定義
+/src-tauri/gen/
+
 # --- 実データを絶対にコミットしない（CLAUDE.md ルール4） ---
 # app.db / chat.db のコピーは本文を含む。
 *.db

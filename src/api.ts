@@ -151,6 +151,51 @@ export function rejectFact(id: number): Promise<void> {
   return invoke("reject_fact", { id });
 }
 
+export type TargetView = {
+  slug: string;
+  display_name: string;
+  handles: string[];
+  enabled: boolean;
+  auto_send: boolean;
+  reply_preset: string;
+  /** precise = 具体的に答える / vague = 曖昧に返して人に聞かない */
+  reply_mode: string;
+};
+
+export function listTargets(): Promise<TargetView[]> {
+  return invoke("list_targets");
+}
+
+export function updateTarget(
+  slug: string,
+  patch: { autoSend?: boolean; replyPreset?: string; replyMode?: string },
+): Promise<void> {
+  return invoke("update_target", {
+    slug,
+    autoSend: patch.autoSend ?? null,
+    replyPreset: patch.replyPreset ?? null,
+    replyMode: patch.replyMode ?? null,
+  });
+}
+
+export type Limits = {
+  max_consecutive_auto: number;
+  max_per_hour: number;
+  max_per_day: number;
+  stale_threshold_minutes: number;
+  monthly_soft_limit_usd: number;
+  monthly_hard_limit_usd: number;
+  month_cost_usd: number;
+};
+
+export function getLimits(): Promise<Limits> {
+  return invoke("get_limits");
+}
+
+export function setLimit(key: string, value: number): Promise<void> {
+  return invoke("set_limit", { key, value });
+}
+
 export type ProviderChoice = {
   id: string;
   label: string;

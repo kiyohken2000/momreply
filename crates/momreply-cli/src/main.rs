@@ -337,7 +337,7 @@ async fn cmd_watch(
         .with_context(|| format!("不明な長さ指定: {}", target.reply_preset))?;
 
     let options = pipeline::Options {
-        limits: pipeline::Limits::default(),
+        limits: pipeline::Limits::load(&store)?,
         preset,
         // 明示しない限り送らない。
         dry_run: !live,

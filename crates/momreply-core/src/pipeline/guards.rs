@@ -110,6 +110,37 @@ pub struct Limits {
     pub monthly_hard_limit_usd: f64,
 }
 
+impl Limits {
+    /// app.db から読む。未設定の項目は既定値のまま。
+    ///
+    /// **既定値をハードコードしたまま UI に出すと、変えても効かない設定に
+    /// なる。** ここを通すことで、画面の値と実際の判定を一致させる。
+    pub fn load(store: &crate::store::Store) -> anyhow::Result<Self> {
+        let d = Self::default();
+        let num = |key: &str| -> anyhow::Result<Option<f64>> {
+            Ok(store.get_kv(key)?.and_then(|v| v.trim().parse().ok()))
+        };
+
+        Ok(Limits {
+            stale_threshold: num("limits.stale_threshold_minutes")?
+                .map(|m| Duration::from_secs((m * 60.0) as u64))
+                .unwrap_or(d.stale_threshold),
+            cooldown_after_send: num("limits.cooldown_seconds")?
+                .map(|v| Duration::from_secs(v as u64))
+                .unwrap_or(d.cooldown_after_send),
+            max_per_hour: num("limits.max_per_hour")?.map(|v| v as u32).unwrap_or(d.max_per_hour),
+            max_per_day: num("limits.max_per_day")?.map(|v| v as u32).unwrap_or(d.max_per_day),
+            max_consecutive_auto: num("limits.max_consecutive_auto")?
+                .map(|v| v as u32)
+                .unwrap_or(d.max_consecutive_auto),
+            monthly_soft_limit_usd: num("limits.monthly_soft_limit_usd")?
+                .unwrap_or(d.monthly_soft_limit_usd),
+            monthly_hard_limit_usd: num("limits.monthly_hard_limit_usd")?
+                .unwrap_or(d.monthly_hard_limit_usd),
+        })
+    }
+}
+
 impl Default for Limits {
     fn default() -> Self {
         Limits {

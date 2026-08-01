@@ -524,6 +524,134 @@ pub fn reject_fact(id: i64) -> Result<(), String> {
     store.set_fact_status(id, "rejected").map_err(|e| e.to_string())
 }
 
+// MARK: 相手ごとの設定
+
+#[derive(Serialize)]
+pub struct TargetView {
+    slug: String,
+    display_name: String,
+    handles: Vec<String>,
+    enabled: bool,
+    auto_send: bool,
+    reply_preset: String,
+    /// `precise` | `vague`
+    reply_mode: String,
+}
+
+#[tauri::command]
+pub fn list_targets() -> Result<Vec<TargetView>, String> {
+    let store = Store::open_default().map_err(|e| e.to_string())?;
+    Ok(store
+        .list_targets()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|t| TargetView {
+            slug: t.slug,
+            display_name: t.display_name,
+            handles: t.handles,
+            enabled: t.enabled,
+            auto_send: t.auto_send,
+            reply_preset: t.reply_preset,
+            reply_mode: t.reply_mode,
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub fn update_target(
+    slug: String,
+    auto_send: Option<bool>,
+    reply_preset: Option<String>,
+    reply_mode: Option<String>,
+) -> Result<(), String> {
+    let store = Store::open_default().map_err(|e| e.to_string())?;
+    let target = store
+        .target_by_slug(&slug)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("'{slug}' は登録されていません"))?;
+
+    if let Some(v) = auto_send {
+        // キーが無い状態で自動送信を有効にすると、次の受信で生成が
+        // 失敗して初めて気づくことになる。
+        if v && !Provider::with_keys().into_iter().any(credentials::is_configured) {
+            return Err("APIキーが設定されていません".into());
+        }
+        store.set_auto_send(target.id, v).map_err(|e| e.to_string())?;
+    }
+    if let Some(p) = reply_preset {
+        momreply_core::pipeline::LengthPreset::parse(&p)
+            .ok_or_else(|| format!("不明な長さ: {p}"))?;
+        store.set_reply_preset(target.id, &p).map_err(|e| e.to_string())?;
+    }
+    if let Some(m) = reply_mode {
+        if m != "precise" && m != "vague" {
+            return Err(format!("不明な方針: {m}"));
+        }
+        store.set_reply_mode(target.id, &m).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+// MARK: 上限（仕様書 6.4.5）
+
+#[derive(Serialize)]
+pub struct LimitsView {
+    max_consecutive_auto: u32,
+    max_per_hour: u32,
+    max_per_day: u32,
+    stale_threshold_minutes: u32,
+    monthly_soft_limit_usd: f64,
+    monthly_hard_limit_usd: f64,
+    /// 当月の推定コスト。単価未設定のモデルは 0 として数える。
+    month_cost_usd: f64,
+}
+
+#[tauri::command]
+pub fn get_limits() -> Result<LimitsView, String> {
+    let store = Store::open_default().map_err(|e| e.to_string())?;
+    let l = momreply_core::pipeline::Limits::load(&store).map_err(|e| e.to_string())?;
+
+    // 相手ごとの合計。放置運用で効いてくるのはここ。
+    let mut cost = 0.0;
+    for t in store.list_targets().map_err(|e| e.to_string())? {
+        cost += store.month_cost_usd(t.id).map_err(|e| e.to_string())?;
+    }
+
+    Ok(LimitsView {
+        max_consecutive_auto: l.max_consecutive_auto,
+        max_per_hour: l.max_per_hour,
+        max_per_day: l.max_per_day,
+        stale_threshold_minutes: (l.stale_threshold.as_secs() / 60) as u32,
+        monthly_soft_limit_usd: l.monthly_soft_limit_usd,
+        monthly_hard_limit_usd: l.monthly_hard_limit_usd,
+        month_cost_usd: cost,
+    })
+}
+
+#[tauri::command]
+pub fn set_limit(key: String, value: f64) -> Result<(), String> {
+    // 想定外のキーで kv を汚さない。
+    const ALLOWED: [&str; 6] = [
+        "max_consecutive_auto",
+        "max_per_hour",
+        "max_per_day",
+        "stale_threshold_minutes",
+        "monthly_soft_limit_usd",
+        "monthly_hard_limit_usd",
+    ];
+    if !ALLOWED.contains(&key.as_str()) {
+        return Err(format!("不明な設定: {key}"));
+    }
+    if value < 0.0 {
+        return Err("負の値は設定できません".into());
+    }
+
+    let store = Store::open_default().map_err(|e| e.to_string())?;
+    store
+        .set_kv(&format!("limits.{key}"), &value.to_string())
+        .map_err(|e| e.to_string())
+}
+
 // MARK: 生成に使うプロバイダ（仕様書 7.4 の llm.primary）
 
 #[derive(Serialize)]

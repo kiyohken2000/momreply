@@ -88,7 +88,7 @@ fn tick(app: &AppHandle, chat_db: &rusqlite::Connection, gap: bool) -> anyhow::R
         if let Some(message) = plan.actionable {
             let preset = LengthPreset::parse(&target.reply_preset).unwrap_or(LengthPreset::Mirror);
             let options = pipeline::Options {
-                limits: pipeline::Limits::default(),
+                limits: pipeline::Limits::load(&store)?,
                 preset,
                 dry_run: dry_run(&store)?,
                 redo_instruction: None,

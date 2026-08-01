@@ -15,15 +15,17 @@ import {
 import ApiKeyRow from "./components/ApiKeyRow";
 import SelfProfile from "./components/SelfProfile";
 import Replies from "./components/Replies";
+import Targets from "./components/Targets";
 
 /**
  * ポップオーバーは 380x560 しかない。縦に積むと下のものが画面外へ
  * 押し出されて、存在に気づけなくなる。区切って切り替える。
  */
-type Tab = "replies" | "self" | "settings";
+type Tab = "replies" | "targets" | "self" | "settings";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "replies", label: "返信" },
+  { id: "targets", label: "相手" },
   { id: "self", label: "自分について" },
   { id: "settings", label: "設定" },
 ];
@@ -103,6 +105,7 @@ export default function App() {
           テキストエリアの flex-1 が効かない。 */}
       <main className="min-h-0 flex-1 overflow-hidden">
         {tab === "replies" && <Replies />}
+        {tab === "targets" && <Targets />}
         {tab === "self" && <SelfProfile />}
 
         {tab === "settings" && (

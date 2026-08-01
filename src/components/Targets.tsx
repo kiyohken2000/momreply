@@ -1,0 +1,231 @@
+import { useCallback, useEffect, useState } from "react";
+import {
+  getLimits,
+  listTargets,
+  setLimit,
+  updateTarget,
+  LENGTH_PRESETS,
+  type Limits,
+  type TargetView,
+} from "../api";
+
+const MODES = [
+  {
+    id: "vague",
+    label: "おまかせ",
+    hint: "明確な答えは出さず、当たり障りのない長文で返します。あなたへの確認は発生しません。",
+  },
+  {
+    id: "precise",
+    label: "きちんと答える",
+    hint: "質問に具体的に答えます。答える材料が無いときはあなたに聞きます。",
+  },
+] as const;
+
+/** 相手ごとの設定と、暴走を止める上限（仕様書 6.4.5）。 */
+export default function Targets() {
+  const [targets, setTargets] = useState<TargetView[] | null>(null);
+  const [limits, setLimits] = useState<Limits | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const [t, l] = await Promise.all([listTargets(), getLimits()]);
+      setTargets(t);
+      setLimits(l);
+      setError(null);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function patch(slug: string, p: Parameters<typeof updateTarget>[1]) {
+    try {
+      await updateTarget(slug, p);
+      await load();
+      setError(null);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function limit(key: string, value: number) {
+    try {
+      await setLimit(key, value);
+      await load();
+      setError(null);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  if (targets === null) {
+    return <p className="px-4 py-4 text-xs text-neutral-400">読み込み中…</p>;
+  }
+
+  return (
+    <div className="h-full overflow-y-auto pb-4">
+      {error && <p className="px-4 pt-3 text-xs break-words text-red-600">{error}</p>}
+
+      {targets.length === 0 && (
+        <p className="px-4 py-4 text-xs text-neutral-400">
+          相手が登録されていません。CLI の <code>target add</code> で追加します。
+        </p>
+      )}
+
+      {targets.map((t) => (
+        <section
+          key={t.slug}
+          className="border-b border-neutral-200 px-4 py-3 dark:border-neutral-700"
+        >
+          <div className="flex items-baseline justify-between">
+            <span className="text-sm font-medium">{t.display_name}</span>
+            <span className="text-[11px] text-neutral-400">{t.handles.join(", ")}</span>
+          </div>
+
+          <div className="mt-2">
+            <div className="text-[11px] text-neutral-500 dark:text-neutral-400">返信の方針</div>
+            {MODES.map((m) => (
+              <label key={m.id} className="mt-1 flex items-start gap-2">
+                <input
+                  type="radio"
+                  name={`mode-${t.slug}`}
+                  className="mt-0.5"
+                  checked={t.reply_mode === m.id}
+                  onChange={() => void patch(t.slug, { replyMode: m.id })}
+                />
+                <span className="text-xs">
+                  {m.label}
+                  <span className="block text-[10px] text-neutral-400">{m.hint}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+
+          <div className="mt-2">
+            <div className="text-[11px] text-neutral-500 dark:text-neutral-400">長さ</div>
+            <div className="mt-1 flex flex-wrap gap-1">
+              {LENGTH_PRESETS.map((p) => (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => void patch(t.slug, { replyPreset: p.id })}
+                  className={
+                    "rounded px-2 py-0.5 text-[11px] " +
+                    (t.reply_preset === p.id
+                      ? "bg-blue-600 text-white"
+                      : "border border-neutral-300 dark:border-neutral-600")
+                  }
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* 自動送信は最後に置く。ここを入れると確認なしに本物が飛ぶ。 */}
+          <label className="mt-3 flex items-start gap-2">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={t.auto_send}
+              onChange={(e) => void patch(t.slug, { autoSend: e.target.checked })}
+            />
+            <span className="text-xs">
+              自動で送信する
+              <span className="block text-[10px] text-amber-600">
+                確認なしに本物のメッセージが送られます。全体設定のドライランが
+                ONの間は送られません。
+              </span>
+            </span>
+          </label>
+        </section>
+      ))}
+
+      {limits && (
+        <section className="px-4 py-3">
+          <h3 className="text-xs font-semibold tracking-wide text-neutral-500 uppercase dark:text-neutral-400">
+            暴走を止める上限
+          </h3>
+          <p className="mt-1 text-[10px] text-neutral-400">
+            放置して使う場合、ここが最後の歯止めになります。
+          </p>
+
+          <LimitRow
+            label="連続で自動返信する上限"
+            hint="これを超えると確認モードに落ちます。放置運用ではここが最初に効きます。"
+            value={limits.max_consecutive_auto}
+            onChange={(v) => void limit("max_consecutive_auto", v)}
+          />
+          <LimitRow
+            label="1時間あたりの送信数"
+            value={limits.max_per_hour}
+            onChange={(v) => void limit("max_per_hour", v)}
+          />
+          <LimitRow
+            label="1日あたりの送信数"
+            value={limits.max_per_day}
+            onChange={(v) => void limit("max_per_day", v)}
+          />
+          <LimitRow
+            label="月の上限（USD）"
+            hint="超えると生成も自動送信も止まります。"
+            value={limits.monthly_hard_limit_usd}
+            step={0.5}
+            onChange={(v) => void limit("monthly_hard_limit_usd", v)}
+          />
+
+          <p className="mt-2 text-[11px] text-neutral-500 dark:text-neutral-400">
+            今月の推定コスト: ${limits.month_cost_usd.toFixed(2)}
+            <span className="block text-[10px] text-neutral-400">
+              単価が未設定のモデルは 0 として数えています。
+            </span>
+          </p>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function LimitRow({
+  label,
+  hint,
+  value,
+  step = 1,
+  onChange,
+}: {
+  label: string;
+  hint?: string;
+  value: number;
+  step?: number;
+  onChange: (value: number) => void;
+}) {
+  const [draft, setDraft] = useState(String(value));
+  useEffect(() => setDraft(String(value)), [value]);
+
+  return (
+    <div className="mt-2">
+      <div className="flex items-center gap-2">
+        <span className="flex-1 text-xs">{label}</span>
+        <input
+          type="number"
+          min={0}
+          step={step}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={() => {
+            const n = Number(draft);
+            if (Number.isFinite(n) && n >= 0 && n !== value) onChange(n);
+            else setDraft(String(value));
+          }}
+          className="w-20 rounded border border-neutral-300 px-2 py-0.5 text-right text-xs dark:border-neutral-600 dark:bg-neutral-800"
+        />
+      </div>
+      {hint && <p className="text-[10px] text-neutral-400">{hint}</p>}
+    </div>
+  );
+}

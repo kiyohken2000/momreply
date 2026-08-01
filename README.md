@@ -211,4 +211,4 @@ macOS の chat.db には引っかかりやすい点がいくつかある。
 
 ## ライセンス
 
-未定。
+MIT License. 詳細は [LICENSE](LICENSE) を参照。

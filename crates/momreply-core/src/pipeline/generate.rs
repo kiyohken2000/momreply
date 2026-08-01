@@ -1,0 +1,306 @@
+//! 返信案を 1 件生成する。
+//!
+//! Phase 1 の範囲。送信はしない。結果は `dry_run` として記録する。
+
+use anyhow::{bail, Context as _, Result};
+use rusqlite::Connection;
+
+use crate::{
+    imessage,
+    llm::{self, CompletionRequest, LlmError, Provider},
+    pipeline::{clean, prompt, Cleaned},
+    profile, questions,
+    store::{Store, Target},
+};
+
+/// 長さプリセット（仕様書 6.9.1）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LengthPreset {
+    Mirror,
+    Short,
+    Normal,
+    Long,
+    VeryLong,
+}
+
+impl LengthPreset {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "mirror" => Some(Self::Mirror),
+            "short" => Some(Self::Short),
+            "normal" => Some(Self::Normal),
+            "long" => Some(Self::Long),
+            "very_long" => Some(Self::VeryLong),
+            _ => None,
+        }
+    }
+
+    /// 暴走検知の閾値。目標値ではない（仕様書 6.9.1）。
+    pub fn hard_max_length(self) -> usize {
+        match self {
+            Self::Mirror => 300,
+            Self::Short => 150,
+            Self::Normal => 300,
+            Self::Long => 800,
+            Self::VeryLong => 2000,
+        }
+    }
+
+    /// 生成の上限トークン。日本語 1 文字がおよそ 1 トークン強なので
+    /// 閾値より広く取る。狭いと途中で切れる。
+    pub fn max_tokens(self) -> u32 {
+        (self.hard_max_length() as u32) * 3 + 256
+    }
+
+    pub fn instruction(self) -> &'static str {
+        match self {
+            Self::Mirror => "相手のメッセージと同じくらいの長さで返す。相手が一言なら一言で返す。",
+            Self::Short => "10〜40文字程度。1文で簡潔に。",
+            Self::Normal => "30〜100文字程度。1〜2文。",
+            Self::Long => {
+                "200〜400文字程度。近況や感想を具体的に添えて、3〜5文程度で書く。\
+                 ただし文体は文例のまま崩さないこと。"
+            }
+            Self::VeryLong => {
+                "600〜1200文字程度。近況、感想、質問などを織り交ぜてたっぷり書く。\
+                 改行を使って読みやすくする。ただし文体・語尾・絵文字の使い方は\
+                 文例のまま崩さないこと。丁寧語やビジネス文体に寄せてはいけない。"
+            }
+        }
+    }
+}
+
+pub struct Draft {
+    pub chat_rowid: i64,
+    pub incoming: String,
+    pub text: String,
+    pub provider: String,
+    pub model: String,
+    pub input_tokens: Option<u32>,
+    pub output_tokens: Option<u32>,
+    pub latency_ms: u64,
+    /// 上限超過で確認に倒れたか（仕様書 6.2.1-5）。
+    pub held_for_review: bool,
+    /// 答える材料が無かった質問。空でなければ生成せず人間に聞く。
+    pub unanswerable: Vec<String>,
+}
+
+/// 直近の受信メッセージ 1 件に対して返信案を作る。
+///
+/// `message` は生成対象として選ばれた受信メッセージ。
+pub async fn draft_reply(
+    chat_db: &Connection,
+    store: &Store,
+    target: &Target,
+    message: &imessage::Message,
+    preset: LengthPreset,
+) -> Result<Draft> {
+    let incoming = message
+        .body
+        .clone()
+        .context("本文が無いメッセージは生成対象にならない")?;
+
+    // 質問を取り出し、答える材料があるか調べる。
+    // 材料が無いものは生成に回さず人間に聞く（はぐらかしを出さないため）。
+    let found = questions::extract(&incoming);
+    let mut known_answers = Vec::new();
+    let mut unanswerable = Vec::new();
+
+    for q in &found {
+        if let Some(answer) = store.known_answer(target.id, &q.text)? {
+            known_answers.push((q.text.clone(), answer));
+            continue;
+        }
+        if let Some(standing) = store.standing_answer(target.id, q.kind())? {
+            known_answers.push((q.text.clone(), standing.answer));
+            continue;
+        }
+        unanswerable.push(q.text.clone());
+    }
+
+    if !unanswerable.is_empty() {
+        // 質問として記録しておく。人間が答えれば次から自動で答えられる。
+        store.record_questions(target.id, message.rowid, &found)?;
+        return Ok(Draft {
+            chat_rowid: message.rowid,
+            incoming,
+            text: String::new(),
+            provider: String::new(),
+            model: String::new(),
+            input_tokens: None,
+            output_tokens: None,
+            latency_ms: 0,
+            held_for_review: true,
+            unanswerable,
+        });
+    }
+
+    let provider = primary_provider(store)?;
+    let model = store
+        .get_kv(&provider.model_setting_key())?
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or_else(|| provider.default_model().to_string());
+
+    let recent: Vec<(bool, String)> =
+        imessage::recent_messages(chat_db, &target.handles, 20)?
+            .into_iter()
+            .filter(|m| m.skip.is_none() && m.rowid != message.rowid)
+            .filter_map(|m| m.body.map(|b| (m.is_from_me, b)))
+            .collect();
+
+    let ctx = prompt::Context {
+        display_name: target.display_name.clone(),
+        user_name: store
+            .get_kv("user_name")?
+            .unwrap_or_else(|| "自分".to_string()),
+        self_profile: profile::read_self()?,
+        target_profile: profile::read_target(&target.slug, &target.display_name)?,
+        fewshot: store.fewshot(target.id)?,
+        recent,
+        incoming: incoming.clone(),
+        questions: found,
+        known_answers,
+        now: chrono::Local::now().format("%Y年%-m月%-d日(%a) %H:%M").to_string(),
+        length_instruction: preset.instruction().to_string(),
+    };
+
+    let llm = llm::build(provider, Some(model.clone())).map_err(anyhow::Error::from)?;
+    let response = call_with_retry(
+        llm.as_ref(),
+        CompletionRequest {
+            model: model.clone(),
+            system: prompt::system(&ctx),
+            messages: prompt::messages(&ctx),
+            max_tokens: preset.max_tokens(),
+            temperature: 0.8,
+        },
+    )
+    .await?;
+
+    store.log_generation(
+        target.id,
+        message.rowid,
+        "initial",
+        provider.id(),
+        &model,
+        response.input_tokens,
+        response.output_tokens,
+        response.latency_ms,
+        Some(&response.text),
+        None,
+    )?;
+
+    let (text, held) = match clean(&response.text, preset.hard_max_length()) {
+        Cleaned::Ok(t) => (t, false),
+        Cleaned::TooLong { text, chars } => {
+            // 送らずに確認へ倒す。長さの暴走は事故に直結する。
+            eprintln!("警告: 生成が {chars} 文字で上限を超えた。送信せず確認に回す");
+            (text, true)
+        }
+        Cleaned::Empty => bail!("生成結果が空だった"),
+    };
+
+    Ok(Draft {
+        chat_rowid: message.rowid,
+        incoming,
+        text,
+        provider: provider.id().to_string(),
+        model,
+        input_tokens: response.input_tokens,
+        output_tokens: response.output_tokens,
+        latency_ms: response.latency_ms,
+        held_for_review: held,
+        unanswerable: Vec::new(),
+    })
+}
+
+/// 指数バックオフで最大 3 回（仕様書 6.2）。
+async fn call_with_retry(
+    llm: &dyn llm::LlmProvider,
+    req: CompletionRequest,
+) -> Result<llm::CompletionResponse> {
+    let mut delay = std::time::Duration::from_millis(500);
+    let mut last: Option<LlmError> = None;
+
+    for attempt in 0..3 {
+        match llm.complete(req.clone()).await {
+            Ok(r) => return Ok(r),
+            Err(e) if e.is_retryable() => {
+                eprintln!("{}回目の呼び出しに失敗（再試行する）: {e}", attempt + 1);
+                last = Some(e);
+                tokio::time::sleep(delay).await;
+                delay *= 2;
+            }
+            // Auth / InvalidOutput はリトライしても同じ結果になる。
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Err(last
+        .map(anyhow::Error::from)
+        .unwrap_or_else(|| anyhow::anyhow!("生成に失敗した")))
+}
+
+/// 主プロバイダ。未設定なら設定済みのものから選ぶ。
+fn primary_provider(store: &Store) -> Result<Provider> {
+    if let Some(id) = store.get_kv("llm.primary")? {
+        if let Some(p) = Provider::parse(&id) {
+            return Ok(p);
+        }
+    }
+    Provider::with_keys()
+        .into_iter()
+        .find(|p| llm::credentials::is_configured(*p))
+        .context("APIキーが設定されたプロバイダがありません")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 閾値は目標値の 2 倍程度、という仕様書 6.9.1 の目安に沿っていること。
+    #[test]
+    fn presets_have_sane_limits() {
+        assert!(LengthPreset::Short.hard_max_length() < LengthPreset::Normal.hard_max_length());
+        assert!(LengthPreset::Normal.hard_max_length() < LengthPreset::Long.hard_max_length());
+        assert!(LengthPreset::Long.hard_max_length() < LengthPreset::VeryLong.hard_max_length());
+    }
+
+    /// トークン枠が閾値より狭いと、上限に届く前に生成が切れて
+    /// 「短いのに未完成」という最悪の出力になる。
+    #[test]
+    fn token_budget_exceeds_the_character_limit() {
+        for p in [
+            LengthPreset::Mirror,
+            LengthPreset::Short,
+            LengthPreset::Normal,
+            LengthPreset::Long,
+            LengthPreset::VeryLong,
+        ] {
+            assert!(
+                p.max_tokens() as usize > p.hard_max_length(),
+                "{p:?} のトークン枠が狭すぎる"
+            );
+        }
+    }
+
+    #[test]
+    fn long_presets_insist_on_keeping_the_voice() {
+        // 長く書かせると丁寧語に寄る（仕様書 14.9）。指示に明記されていること。
+        assert!(LengthPreset::Long.instruction().contains("文体"));
+        assert!(LengthPreset::VeryLong.instruction().contains("丁寧語"));
+    }
+
+    #[test]
+    fn preset_names_round_trip() {
+        for (s, p) in [
+            ("mirror", LengthPreset::Mirror),
+            ("short", LengthPreset::Short),
+            ("normal", LengthPreset::Normal),
+            ("long", LengthPreset::Long),
+            ("very_long", LengthPreset::VeryLong),
+        ] {
+            assert_eq!(LengthPreset::parse(s), Some(p));
+        }
+        assert_eq!(LengthPreset::parse("なにか"), None);
+    }
+}

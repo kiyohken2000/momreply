@@ -5,7 +5,9 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use momreply_core::{
-    imessage, profile,
+    fewshot, imessage,
+    pipeline::{self, LengthPreset},
+    profile,
     questions::{self, QuestionKind},
     store::{NewTarget, Store},
 };
@@ -48,6 +50,37 @@ enum Command {
     /// 相手からの質問と、それに対する自分の答えを管理する。
     #[command(subcommand)]
     Questions(QuestionCmd),
+    /// 生成に使う設定を確認・変更する。
+    Config {
+        /// 主プロバイダ（anthropic|gemini|openai）。
+        #[arg(long)]
+        primary: Option<String>,
+        /// プロンプトで名乗る自分の名前。
+        #[arg(long)]
+        user_name: Option<String>,
+    },
+    /// 文体の手本（few-shot）を作り直す。
+    Fewshot {
+        #[arg(long)]
+        slug: String,
+        /// 保持するペア数。
+        #[arg(long, default_value_t = 40)]
+        limit: usize,
+        /// 遡るメッセージ件数。
+        #[arg(long, default_value_t = 2000)]
+        scan: u32,
+    },
+    /// 返信案を作る。**送信はしない**（Phase 1 はドライランのみ）。
+    Generate {
+        #[arg(long)]
+        slug: String,
+        /// 対象メッセージの ROWID。省略すると直近の受信メッセージを使う。
+        #[arg(long)]
+        rowid: Option<i64>,
+        /// mirror|short|normal|long|very_long
+        #[arg(long, default_value = "mirror")]
+        length: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -114,7 +147,8 @@ enum TargetCmd {
     },
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let chat_db_path = match cli.db {
@@ -132,7 +166,162 @@ fn main() -> Result<()> {
         } => cmd_messages(&chat_db, &handle, limit, include_skipped),
         Command::Target(cmd) => cmd_target(&chat_db, cmd),
         Command::Questions(cmd) => cmd_questions(&chat_db, cmd),
+        Command::Config { primary, user_name } => cmd_config(primary, user_name),
+        Command::Fewshot { slug, limit, scan } => cmd_fewshot(&chat_db, &slug, limit, scan),
+        Command::Generate {
+            slug,
+            rowid,
+            length,
+        } => cmd_generate(&chat_db, &slug, rowid, &length).await,
     }
+}
+
+fn cmd_config(primary: Option<String>, user_name: Option<String>) -> Result<()> {
+    let store = Store::open_default()?;
+
+    if let Some(p) = primary {
+        momreply_core::llm::Provider::parse(&p)
+            .with_context(|| format!("不明なプロバイダ: {p}"))?;
+        store.set_kv("llm.primary", &p)?;
+        println!("主プロバイダ: {p}");
+    }
+    if let Some(name) = user_name {
+        store.set_kv("user_name", &name)?;
+        println!("自分の名前: {name}");
+    }
+
+    println!();
+    println!(
+        "llm.primary = {}",
+        store.get_kv("llm.primary")?.unwrap_or_else(|| "(未設定)".into())
+    );
+    println!(
+        "user_name   = {}",
+        store.get_kv("user_name")?.unwrap_or_else(|| "(未設定)".into())
+    );
+    for p in momreply_core::llm::Provider::with_keys() {
+        println!(
+            "model.{:<10} = {}",
+            p.id(),
+            store
+                .get_kv(&p.model_setting_key())?
+                .unwrap_or_else(|| format!("{} (既定)", p.default_model()))
+        );
+    }
+    Ok(())
+}
+
+fn cmd_fewshot(
+    chat_db: &rusqlite::Connection,
+    slug: &str,
+    limit: usize,
+    scan: u32,
+) -> Result<()> {
+    let store = Store::open_default()?;
+    let target = store
+        .target_by_slug(slug)?
+        .with_context(|| format!("'{slug}' は登録されていない"))?;
+
+    let n = fewshot::rebuild(chat_db, &store, target.id, &target.handles, limit, scan)?;
+    println!("{} 件のペアを保存しました（直近 {scan} 件を走査）", n);
+
+    if n < 10 {
+        println!();
+        println!("警告: ペアが少ないため文体の再現度が落ちます。--scan を増やしてください。");
+    }
+
+    let pairs = store.fewshot(target.id)?;
+    println!();
+    println!("先頭 3 件:");
+    for p in pairs.iter().take(3) {
+        println!("  相手: {}", p.incoming.replace('\n', " "));
+        println!("  自分: {}", p.reply.replace('\n', " "));
+    }
+    Ok(())
+}
+
+async fn cmd_generate(
+    chat_db: &rusqlite::Connection,
+    slug: &str,
+    rowid: Option<i64>,
+    length: &str,
+) -> Result<()> {
+    let store = Store::open_default()?;
+    let target = store
+        .target_by_slug(slug)?
+        .with_context(|| format!("'{slug}' は登録されていない"))?;
+    let preset = LengthPreset::parse(length)
+        .with_context(|| format!("不明な長さ指定: {length}"))?;
+
+    // 対象メッセージを決める。
+    let recent = imessage::recent_messages(chat_db, &target.handles, 100)?;
+    let message = match rowid {
+        Some(id) => recent
+            .into_iter()
+            .find(|m| m.rowid == id)
+            .with_context(|| format!("ROWID {id} が直近 100 件に無い"))?,
+        None => recent
+            .into_iter()
+            .filter(|m| !m.is_from_me && m.skip.is_none())
+            .next_back()
+            .context("生成対象になる受信メッセージが見つからない")?,
+    };
+
+    println!("対象 #{} {}", message.rowid, message.date.format("%m-%d %H:%M"));
+    for line in message.body.as_deref().unwrap_or("").lines() {
+        println!("  {line}");
+    }
+    println!();
+
+    let draft = pipeline::draft_reply(chat_db, &store, &target, &message, preset).await?;
+
+    if !draft.unanswerable.is_empty() {
+        println!("答える材料がありません。生成せずに確認へ回しました。");
+        for q in &draft.unanswerable {
+            println!("  ・{q}");
+        }
+        println!();
+        println!("答えを登録する:");
+        println!("  momreply-cli questions list --slug {slug}");
+        store.record_processed(
+            target.id,
+            message.rowid,
+            &message.chat_identifier,
+            message.date.timestamp(),
+            message.body.as_deref(),
+            "awaiting_review",
+            Some("needs_answer"),
+            None,
+            None,
+            None,
+        )?;
+        return Ok(());
+    }
+
+    println!("--- 返信案（送信していません） ---");
+    println!("{}", draft.text);
+    println!("---");
+    println!(
+        "{} / {} / {}ms / in {:?} out {:?}",
+        draft.provider, draft.model, draft.latency_ms, draft.input_tokens, draft.output_tokens
+    );
+    if draft.held_for_review {
+        println!("※ 長さの上限を超えたため、自動送信の対象から外れます");
+    }
+
+    store.record_processed(
+        target.id,
+        message.rowid,
+        &message.chat_identifier,
+        message.date.timestamp(),
+        message.body.as_deref(),
+        if draft.held_for_review { "awaiting_review" } else { "dry_run" },
+        None,
+        Some(&draft.text),
+        Some(&draft.provider),
+        Some(&draft.model),
+    )?;
+    Ok(())
 }
 
 fn cmd_questions(chat_db: &rusqlite::Connection, cmd: QuestionCmd) -> Result<()> {

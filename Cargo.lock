@@ -2471,6 +2471,7 @@ dependencies = [
  "clap",
  "momreply-core",
  "rusqlite",
+ "tokio",
 ]
 
 [[package]]

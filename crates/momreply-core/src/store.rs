@@ -664,6 +664,123 @@ impl Store {
         })
     }
 
+    // MARK: few-shot
+
+    /// few-shot を入れ替える。古い分は捨てる。
+    pub fn replace_fewshot(&self, target_id: i64, pairs: &[crate::fewshot::Pair]) -> Result<()> {
+        let now = now_unix();
+        self.conn.execute(
+            "DELETE FROM fewshot_pairs WHERE target_id = ?1",
+            [target_id],
+        )?;
+        for p in pairs {
+            self.conn.execute(
+                "INSERT INTO fewshot_pairs (target_id, incoming, reply, source_rowid, built_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                (target_id, &p.incoming, &p.reply, p.source_rowid, now),
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn fewshot(&self, target_id: i64) -> Result<Vec<crate::fewshot::Pair>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT incoming, reply, source_rowid FROM fewshot_pairs
+             WHERE target_id = ?1 ORDER BY source_rowid",
+        )?;
+        let rows = stmt.query_map([target_id], |row| {
+            Ok(crate::fewshot::Pair {
+                incoming: row.get(0)?,
+                reply: row.get(1)?,
+                source_rowid: row.get(2)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    // MARK: 記録
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn log_generation(
+        &self,
+        target_id: i64,
+        chat_rowid: i64,
+        kind: &str,
+        provider: &str,
+        model: &str,
+        input_tokens: Option<u32>,
+        output_tokens: Option<u32>,
+        latency_ms: u64,
+        output: Option<&str>,
+        error: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO generation_log
+               (target_id, chat_rowid, kind, provider, model,
+                input_tokens, output_tokens, latency_ms, output, error, created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            (
+                target_id,
+                chat_rowid,
+                kind,
+                provider,
+                model,
+                input_tokens,
+                output_tokens,
+                latency_ms as i64,
+                output,
+                error,
+                now_unix(),
+            ),
+        )?;
+        Ok(())
+    }
+
+    /// 処理結果を記録する。`status` は仕様書 5.2 の値。
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_processed(
+        &self,
+        target_id: i64,
+        chat_rowid: i64,
+        chat_guid: &str,
+        received_at: i64,
+        body: Option<&str>,
+        status: &str,
+        skip_reason: Option<&str>,
+        draft: Option<&str>,
+        provider: Option<&str>,
+        model: Option<&str>,
+    ) -> Result<()> {
+        let now = now_unix();
+        self.conn.execute(
+            "INSERT INTO processed_messages
+               (chat_rowid, target_id, chat_guid, received_at, body, status,
+                skip_reason, draft, provider, model, created_at, updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11)
+             ON CONFLICT(chat_rowid) DO UPDATE SET
+               status = excluded.status,
+               skip_reason = excluded.skip_reason,
+               draft = excluded.draft,
+               provider = excluded.provider,
+               model = excluded.model,
+               updated_at = excluded.updated_at",
+            (
+                chat_rowid,
+                target_id,
+                chat_guid,
+                received_at,
+                body,
+                status,
+                skip_reason,
+                draft,
+                provider,
+                model,
+                now,
+            ),
+        )?;
+        Ok(())
+    }
+
     // MARK: kv
 
     pub fn get_kv(&self, key: &str) -> Result<Option<String>> {

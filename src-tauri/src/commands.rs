@@ -48,9 +48,12 @@ async fn verify_into_status(provider: Provider, mut status: KeyStatus) -> KeySta
             status.verified = false;
             status.error = Some("キーが正しくありません".into());
         }
-        Err(LlmError::RateLimit(_)) => {
+        Err(err @ LlmError::RateLimit(_)) => {
+            // 429 は「投げすぎ」とは限らない。OpenAI は残高不足でも 429 に
+            // insufficient_quota を載せて返す。本文を捨てると両者を区別できず、
+            // 待てば直ると誤解させてしまう。
             status.verified = false;
-            status.error = Some("保存済み（レート制限のため未検証）".into());
+            status.error = Some(format!("保存済み（未検証・429）: {}", brief(&err)));
         }
         Err(other) => {
             // モデル名が違う場合はここに来る。API の返答をそのまま見せないと

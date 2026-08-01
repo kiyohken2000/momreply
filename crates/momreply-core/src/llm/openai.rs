@@ -22,6 +22,18 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 /// **この名前が現在も有効かは疎通テストで確かめること。**
 pub const DEFAULT_MODEL: &str = "gpt-5";
 
+/// 疎通テストの出力枠。
+///
+/// 仕様書 7.5.5 は「`max_tokens: 1` で1回送る」としているが、
+/// **推論モデルには通用しない。** 推論トークンを先に消費するため、
+/// 枠が 1 だと出力に到達する前に必ず上限へ当たり、OpenAI はそれを
+/// 200 の切り詰めではなく 400 で返す。キーが正しくても検証が
+/// 失敗し続けることになる。
+///
+/// 推論ぶんを吸収できる程度に取る。1 回だけの呼び出しなので
+/// この値でも費用は無視できる。
+const VERIFY_MAX_TOKENS: u32 = 256;
+
 pub struct Openai {
     model: String,
 }
@@ -158,15 +170,16 @@ impl LlmProvider for Openai {
         })
     }
 
-    /// 仕様書 7.5.5: 最小トークンで 1 回送る。
+    /// 仕様書 7.5.5: 最小の呼び出しを 1 回送る。
     ///
     /// temperature は載せない。モデルによっては既定値以外を拒否するため、
     /// キーの検証が温度設定のせいで落ちるのを避ける。
+    /// 出力枠については [`VERIFY_MAX_TOKENS`] のコメントを参照。
     async fn verify(&self) -> Result<(), LlmError> {
         let body = json!({
             "model": self.model,
             "messages": [{ "role": "user", "content": "hi" }],
-            "max_completion_tokens": 1,
+            "max_completion_tokens": VERIFY_MAX_TOKENS,
         });
 
         let (status, text) = self.post(body, VERIFY_TIMEOUT).await?;
@@ -232,5 +245,15 @@ mod tests {
     fn an_empty_choice_list_is_not_a_panic() {
         let parsed: ChatResponse = serde_json::from_str(r#"{"choices": []}"#).unwrap();
         assert_eq!(extract_text(&parsed), "");
+    }
+
+    /// 仕様書 7.5.5 の字面（max_tokens: 1）に戻すと、推論モデルで
+    /// 検証が必ず 400 になる。実機で踏んだので固定しておく。
+    #[test]
+    fn verify_budget_leaves_room_for_reasoning_tokens() {
+        assert!(
+            VERIFY_MAX_TOKENS >= 64,
+            "疎通テストの出力枠が小さすぎる。推論トークンで使い切って 400 になる"
+        );
     }
 }

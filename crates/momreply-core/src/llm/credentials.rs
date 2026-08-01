@@ -11,10 +11,49 @@
 //! キーを読めるのは同じモジュール内の [`with_key`] 経由のみで、
 //! これは `pub(crate)` である。
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::Provider;
+
+/// プロセス内のキャッシュ。
+///
+/// # なぜ持つか
+///
+/// Keychain を読むたびに、macOS はアクセス許可のダイアログを出しうる。
+/// dev ビルドは再リンクのたびに ad-hoc 署名のハッシュが変わるため、
+/// 「常に許可」を押しても次のビルドで無効になる（仕様書 7.5.7）。
+/// キャッシュが無いと、リトライやプロバイダ一覧の表示のたびに
+/// ダイアログが出て操作にならない。
+///
+/// # 安全性について
+///
+/// キーはどのみち HTTP リクエストを組む間メモリ上に載る。
+/// ここで保持しても露出面は増えない。キャッシュはこのモジュールの
+/// 内側にあり、[`with_key`] 以外から取り出す経路は無い。
+fn cache() -> &'static Mutex<HashMap<&'static str, Option<String>>> {
+    static CACHE: OnceLock<Mutex<HashMap<&'static str, Option<String>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cached(provider: Provider) -> Option<Option<String>> {
+    cache().lock().ok()?.get(provider.id()).cloned()
+}
+
+fn remember(provider: Provider, value: Option<String>) {
+    if let Ok(mut c) = cache().lock() {
+        c.insert(provider.id(), value);
+    }
+}
+
+fn forget(provider: Provider) {
+    if let Ok(mut c) = cache().lock() {
+        c.remove(provider.id());
+    }
+}
 
 /// Keychain の service 名。bundle identifier と同じ（仕様書「名称と識別子」）。
 const SERVICE: &str = crate::paths::BUNDLE_ID;
@@ -77,6 +116,9 @@ pub fn set(provider: Provider, key: &str) -> Result<()> {
     entry(provider)?
         .set_password(trimmed)
         .with_context(|| format!("{} のキーを Keychain に保存できない", provider.id()))?;
+    // 保存した値をそのまま覚えておく。直後の疎通テストで読み直すと
+    // また許可を求められるため。
+    remember(provider, Some(trimmed.to_string()));
     Ok(())
 }
 
@@ -100,6 +142,7 @@ pub fn status(provider: Provider) -> KeyStatus {
 }
 
 pub fn delete(provider: Provider) -> Result<()> {
+    forget(provider);
     match entry(provider)?.delete_credential() {
         Ok(()) => Ok(()),
         // 元から無いなら成功とみなす。
@@ -131,11 +174,19 @@ fn read(provider: Provider) -> Result<Option<String>> {
         return Ok(Some(key));
     }
 
-    match entry(provider)?.get_password() {
-        Ok(key) => Ok(Some(key)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(why) => Err(why).context("Keychain から読み取れない"),
+    // Keychain に触る回数を 1 プロセス 1 回に抑える。
+    // 読むたびに許可ダイアログが出る環境では、これが無いと操作にならない。
+    if let Some(hit) = cached(provider) {
+        return Ok(hit);
     }
+
+    let value = match entry(provider)?.get_password() {
+        Ok(key) => Some(key),
+        Err(keyring::Error::NoEntry) => None,
+        Err(why) => return Err(why).context("Keychain から読み取れない"),
+    };
+    remember(provider, value.clone());
+    Ok(value)
 }
 
 #[cfg(debug_assertions)]

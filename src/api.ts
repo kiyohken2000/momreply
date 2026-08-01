@@ -151,6 +151,27 @@ export function rejectFact(id: number): Promise<void> {
   return invoke("reject_fact", { id });
 }
 
+export type ProviderChoice = {
+  id: string;
+  label: string;
+  configured: boolean;
+  verified: boolean;
+  implemented: boolean;
+  unavailable_reason: string | null;
+};
+
+export function listProviders(): Promise<ProviderChoice[]> {
+  return invoke("list_providers");
+}
+
+export function getPrimaryProvider(): Promise<string> {
+  return invoke("get_primary_provider");
+}
+
+export function setPrimaryProvider(provider: string): Promise<void> {
+  return invoke("set_primary_provider", { provider });
+}
+
 export type ModelSetting = {
   provider: string;
   model: string;

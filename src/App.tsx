@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  getPrimaryProvider,
   getRunMode,
   listKeyStatuses,
   listModels,
+  listProviders,
+  setPrimaryProvider,
   setRunMode,
   type KeyStatus,
   type ModelSetting,
+  type ProviderChoice,
   type RunMode,
 } from "./api";
 import ApiKeyRow from "./components/ApiKeyRow";
@@ -29,14 +33,24 @@ export default function App() {
   const [mode, setMode] = useState<RunMode | null>(null);
   const [statuses, setStatuses] = useState<KeyStatus[] | null>(null);
   const [models, setModels] = useState<ModelSetting[]>([]);
+  const [providers, setProviders] = useState<ProviderChoice[]>([]);
+  const [primary, setPrimary] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const [s, m, r] = await Promise.all([listKeyStatuses(), listModels(), getRunMode()]);
+      const [s, m, r, pv, pr] = await Promise.all([
+        listKeyStatuses(),
+        listModels(),
+        getRunMode(),
+        listProviders(),
+        getPrimaryProvider(),
+      ]);
       setStatuses(s);
       setModels(m);
       setMode(r);
+      setProviders(pv);
+      setPrimary(pr);
       setError(null);
     } catch (e) {
       setError(String(e));
@@ -135,6 +149,47 @@ export default function App() {
                 </p>
               </div>
             )}
+
+            <h2 className="px-4 pt-4 pb-2 text-xs font-semibold tracking-wide text-neutral-500 uppercase dark:text-neutral-400">
+              生成に使うAI
+            </h2>
+            <div className="border-b border-neutral-200 px-4 pb-3 dark:border-neutral-700">
+              {providers.map((p) => (
+                <label
+                  key={p.id}
+                  className="flex items-start gap-2 py-1"
+                  title={p.unavailable_reason ?? ""}
+                >
+                  <input
+                    type="radio"
+                    name="primary"
+                    className="mt-0.5"
+                    checked={primary === p.id}
+                    // 使えないものは選ばせない。選べてしまうと、次の受信で
+                    // 生成が失敗して初めて気づくことになる。
+                    disabled={!p.implemented || !p.configured || !p.verified}
+                    onChange={async () => {
+                      try {
+                        await setPrimaryProvider(p.id);
+                        setPrimary(p.id);
+                        setError(null);
+                      } catch (e) {
+                        setError(String(e));
+                      }
+                    }}
+                  />
+                  <span className="text-xs">
+                    {p.label}
+                    {p.unavailable_reason && (
+                      <span className="ml-1 text-neutral-400">（{p.unavailable_reason}）</span>
+                    )}
+                  </span>
+                </label>
+              ))}
+              <p className="mt-1 text-[11px] text-neutral-400">
+                返信の生成とプロファイル抽出に使われます。
+              </p>
+            </div>
 
             <h2 className="px-4 pt-4 pb-2 text-xs font-semibold tracking-wide text-neutral-500 uppercase dark:text-neutral-400">
               APIキー

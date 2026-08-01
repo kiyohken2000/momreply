@@ -524,6 +524,105 @@ pub fn reject_fact(id: i64) -> Result<(), String> {
     store.set_fact_status(id, "rejected").map_err(|e| e.to_string())
 }
 
+// MARK: 生成に使うプロバイダ（仕様書 7.4 の llm.primary）
+
+#[derive(Serialize)]
+pub struct ProviderChoice {
+    id: String,
+    label: String,
+    /// キーが保存されているか。Apple はキー不要。
+    configured: bool,
+    /// 疎通テストに通っているか。
+    verified: bool,
+    /// 実装済みか。未実装なら選べない。
+    implemented: bool,
+    /// 選べない理由。UI に出す。
+    unavailable_reason: Option<String>,
+}
+
+fn label_of(p: Provider) -> &'static str {
+    match p {
+        Provider::Anthropic => "Anthropic (Claude)",
+        Provider::Gemini => "Gemini",
+        Provider::Openai => "OpenAI (ChatGPT)",
+        Provider::Apple => "Apple Intelligence",
+    }
+}
+
+#[tauri::command]
+pub fn list_providers() -> Result<Vec<ProviderChoice>, String> {
+    let all = [
+        Provider::Anthropic,
+        Provider::Gemini,
+        Provider::Openai,
+        Provider::Apple,
+    ];
+
+    Ok(all
+        .into_iter()
+        .map(|p| {
+            let implemented = p != Provider::Apple;
+            let mut status = credentials::status(p);
+            load_verification(&mut status, p);
+
+            let configured = if p.needs_key() { status.configured } else { true };
+            let reason = if !implemented {
+                Some("未実装です".to_string())
+            } else if !configured {
+                Some("APIキーが未設定です".to_string())
+            } else if !status.verified {
+                Some("疎通テストが済んでいません".to_string())
+            } else {
+                None
+            };
+
+            ProviderChoice {
+                id: p.id().to_string(),
+                label: label_of(p).to_string(),
+                configured,
+                verified: status.verified,
+                implemented,
+                unavailable_reason: reason,
+            }
+        })
+        .collect())
+}
+
+/// 現在の主プロバイダ。未設定なら、使える中から自動で選ぶ。
+#[tauri::command]
+pub fn get_primary_provider() -> Result<String, String> {
+    let store = Store::open_default().map_err(|e| e.to_string())?;
+    if let Some(id) = store.get_kv("llm.primary").map_err(|e| e.to_string())? {
+        if Provider::parse(&id).is_some() {
+            return Ok(id);
+        }
+    }
+    Ok(Provider::with_keys()
+        .into_iter()
+        .find(|p| credentials::is_configured(*p))
+        .map(|p| p.id().to_string())
+        .unwrap_or_default())
+}
+
+/// 主プロバイダを選ぶ。
+///
+/// **使えないものは選ばせない。** 選べてしまうと、次の受信で生成が
+/// 失敗して初めて気づくことになる。
+#[tauri::command]
+pub fn set_primary_provider(provider: String) -> Result<(), String> {
+    let p = parse_provider(&provider)?;
+    if p == Provider::Apple {
+        return Err("Apple Intelligence はまだ実装されていません".into());
+    }
+    if !credentials::is_configured(p) {
+        return Err(format!("{} のAPIキーが設定されていません", label_of(p)));
+    }
+    let store = Store::open_default().map_err(|e| e.to_string())?;
+    store
+        .set_kv("llm.primary", p.id())
+        .map_err(|e| e.to_string())
+}
+
 // MARK: モデル設定
 
 #[derive(Serialize)]

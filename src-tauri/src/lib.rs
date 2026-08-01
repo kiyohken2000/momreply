@@ -42,6 +42,9 @@ pub fn run() {
             commands::resolve_question,
             commands::get_run_mode,
             commands::set_run_mode,
+            commands::list_providers,
+            commands::get_primary_provider,
+            commands::set_primary_provider,
         ])
         .build(tauri::generate_context!())
         .expect("Tauri アプリを初期化できない")

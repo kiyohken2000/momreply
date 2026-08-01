@@ -218,14 +218,18 @@ pub async fn draft_reply(
     })?;
 
     // モデルが「材料が足りない」と言ってきた場合。
-    // 濁した返信を送るより、人間に一度聞くほうがよい。
+    //
+    // 答えられる分だけ書かれていることがある。その場合は本文を残して
+    // 確認に回す。人は足りない部分を書き足すだけで済み、答えられた
+    // ところまで捨てずに済む。**自動送信はしない。**
     if prompt::is_need_info(&response.text) {
         store.record_questions(target.id, message.rowid, &found)?;
+        let partial = prompt::strip_need_info(&response.text);
         let asked: Vec<String> = found.iter().map(|q| q.text.clone()).collect();
         return Ok(Draft {
             chat_rowid: message.rowid,
             incoming,
-            text: String::new(),
+            text: partial,
             provider: provider.id().to_string(),
             model,
             input_tokens: response.input_tokens,
@@ -234,7 +238,7 @@ pub async fn draft_reply(
             held_for_review: true,
             // 質問が取れていない場合もある（合図だけ返ってきたとき）。
             unanswerable: if asked.is_empty() {
-                vec![incoming_summary(&response.text)]
+                vec!["このメッセージに答える材料がありません".to_string()]
             } else {
                 asked
             },
@@ -265,17 +269,6 @@ pub async fn draft_reply(
         unanswerable: Vec::new(),
         skipped: None,
     })
-}
-
-/// 質問が取り出せていないのに材料不足と言われたときの表示。
-fn incoming_summary(raw: &str) -> String {
-    let rest = raw.replace(prompt::NEED_INFO, "");
-    let trimmed = rest.trim();
-    if trimmed.is_empty() {
-        "このメッセージに答える材料がありません".to_string()
-    } else {
-        trimmed.chars().take(80).collect()
-    }
 }
 
 /// 指数バックオフで最大 3 回（仕様書 6.2）。

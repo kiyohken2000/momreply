@@ -630,7 +630,14 @@ async fn cmd_generate(
     }
 
     if !draft.unanswerable.is_empty() {
-        println!("答える材料がありません。生成せずに確認へ回しました。");
+        if draft.text.trim().is_empty() {
+            println!("答える材料がありません。送信せず確認へ回しました。");
+        } else {
+            println!("--- 途中まで（送信していません）---");
+            println!("{}", draft.text);
+            println!("---");
+            println!("残りは材料が足りません:");
+        }
         for q in &draft.unanswerable {
             println!("  ・{q}");
         }

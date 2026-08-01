@@ -32,6 +32,21 @@ pub fn is_need_info(text: &str) -> bool {
     text.contains(NEED_INFO)
 }
 
+/// 合図を取り除いた本文。
+///
+/// 答えられる分だけ書かれていることがある。全部捨てると、
+/// 送れたはずの内容まで失う。**合図が本文に残ると相手に届くので、
+/// ここで必ず落とす。**
+pub fn strip_need_info(text: &str) -> String {
+    text.replace(NEED_INFO, "")
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
 /// 生成に必要な材料。
 pub struct Context {
     /// 相手の表示名。
@@ -94,10 +109,15 @@ pub fn system(ctx: &Context) -> String {
          材料に書いてあることは、迷わず言い切る。\n\n\
          # 材料が足りないとき\n\
          質問に答えるための材料が下に無い場合は、**推測で書かない。**\n\
-         代わりに {NEED_INFO} とだけ出力する。他には何も書かない。\n\
-         その場合は人間が答えを用意する。適当に濁した返信を送るより、\n\
-         一度止まるほうがよい。\n\
-         材料がある質問には、この記号を使わずに普通に答えること。\n\n"
+         代わりに次のようにする。\n\
+         \n\
+         - 答えられる質問が 1 つでもあるなら、**その分は普通に答える。**\n\
+           そのうえで、最後の行に {NEED_INFO} を置く\n\
+         - 1 つも答えられないなら、{NEED_INFO} とだけ出力する\n\
+         \n\
+         この記号は人間への合図で、相手には送られない。\n\
+         答えられる部分まで捨てる必要はない。\n\
+         材料がそろっている質問だけの場合は、この記号を使わない。\n\n"
     ));
 
     s.push_str(
@@ -313,6 +333,31 @@ mod tests {
         assert!(is_need_info(&format!("すみません {NEED_INFO}")));
         assert!(!is_need_info("わかった、明日行くね"));
         assert!(!is_need_info(""));
+    }
+
+    /// 答えられた分は残す。全部捨てると、送れたはずの内容まで失う。
+    #[test]
+    fn a_partial_answer_survives_the_signal() {
+        let raw = format!("資格証明書はあるよ\n{NEED_INFO}");
+        assert_eq!(strip_need_info(&raw), "資格証明書はあるよ");
+    }
+
+    /// 合図が本文に残ると、そのまま相手に届く。必ず落とす。
+    #[test]
+    fn the_signal_never_survives_into_the_body() {
+        for raw in [
+            NEED_INFO.to_string(),
+            format!("{NEED_INFO}\n答えられません"),
+            format!("前half {NEED_INFO} 後half"),
+        ] {
+            assert!(!strip_need_info(&raw).contains(NEED_INFO), "{raw}");
+        }
+    }
+
+    #[test]
+    fn a_signal_only_response_leaves_no_text() {
+        assert_eq!(strip_need_info(NEED_INFO), "");
+        assert_eq!(strip_need_info(&format!("  {NEED_INFO}  ")), "");
     }
 
     #[test]

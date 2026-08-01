@@ -23,6 +23,12 @@ pub fn run() {
             commands::can_enable_auto_send,
             commands::list_models,
             commands::set_model,
+            commands::get_self_profile,
+            commands::set_self_profile,
+            commands::self_profile_path,
+            commands::list_fact_candidates,
+            commands::approve_fact,
+            commands::reject_fact,
         ])
         .build(tauri::generate_context!())
         .expect("Tauri アプリを初期化できない")

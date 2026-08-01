@@ -86,6 +86,32 @@ pub fn append_fact(question: &str, answer: &str) -> Result<()> {
     Ok(())
 }
 
+/// 承認された候補を `self.md` の指定見出しに追記する。
+///
+/// 既存の記述には触れない。人が手で書いた内容を壊さないため。
+pub fn append_to_section(section: &str, line: &str) -> Result<()> {
+    let path = paths::self_profile()?;
+    ensure_file(&path, SELF_TEMPLATE)?;
+    let current = std::fs::read_to_string(&path)?;
+    let heading = format!("## {}", section.trim_start_matches("## "));
+    let entry = format!("- {}", line.trim().trim_start_matches("- "));
+    let updated = insert_under_heading(&current, &heading, &entry);
+    std::fs::write(&path, updated)
+        .with_context(|| format!("self.md に書けない: {}", path.display()))?;
+    Ok(())
+}
+
+/// `self.md` を丸ごと置き換える。UI からの編集に使う。
+pub fn write_self(content: &str) -> Result<()> {
+    let path = paths::self_profile()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, content)
+        .with_context(|| format!("self.md に書けない: {}", path.display()))?;
+    Ok(())
+}
+
 fn ensure_file(path: &Path, template: &str) -> Result<()> {
     if path.exists() {
         return Ok(());

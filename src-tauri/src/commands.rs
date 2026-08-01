@@ -130,6 +130,77 @@ pub fn can_enable_auto_send() -> bool {
         .any(credentials::is_configured)
 }
 
+// MARK: self.md
+
+/// `self.md` の全文を返す。無ければテンプレートを作って返す。
+#[tauri::command]
+pub fn get_self_profile() -> Result<String, String> {
+    momreply_core::profile::read_self().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_self_profile(content: String) -> Result<(), String> {
+    momreply_core::profile::write_self(&content).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn self_profile_path() -> Result<String, String> {
+    momreply_core::paths::self_profile()
+        .map(|p| p.display().to_string())
+        .map_err(|e| e.to_string())
+}
+
+// MARK: self.md への追記候補
+
+#[derive(Serialize)]
+pub struct FactCandidateView {
+    id: i64,
+    section: String,
+    content: String,
+    confidence: String,
+    /// 根拠。人が正しさを判断するために必ず見せる。
+    evidence_ask: Option<String>,
+    evidence_reply: Option<String>,
+}
+
+#[tauri::command]
+pub fn list_fact_candidates() -> Result<Vec<FactCandidateView>, String> {
+    let store = Store::open_default().map_err(|e| e.to_string())?;
+    Ok(store
+        .pending_facts()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|c| FactCandidateView {
+            id: c.id,
+            section: c.section,
+            content: c.content,
+            confidence: c.confidence,
+            evidence_ask: c.evidence_ask,
+            evidence_reply: c.evidence_reply,
+        })
+        .collect())
+}
+
+/// 承認して `self.md` に追記する。**ここを通らない限り反映しない。**
+#[tauri::command]
+pub fn approve_fact(id: i64) -> Result<String, String> {
+    let store = Store::open_default().map_err(|e| e.to_string())?;
+    let c = store
+        .fact_candidate(id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("候補 #{id} がありません"))?;
+    momreply_core::profile::append_to_section(&c.section, &c.content)
+        .map_err(|e| e.to_string())?;
+    store.set_fact_status(id, "approved").map_err(|e| e.to_string())?;
+    momreply_core::profile::read_self().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn reject_fact(id: i64) -> Result<(), String> {
+    let store = Store::open_default().map_err(|e| e.to_string())?;
+    store.set_fact_status(id, "rejected").map_err(|e| e.to_string())
+}
+
 // MARK: モデル設定
 
 #[derive(Serialize)]

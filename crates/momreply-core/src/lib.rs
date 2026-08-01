@@ -3,6 +3,7 @@
 //! UI（Tauri / CLI）はこのクレートを呼ぶだけにして、
 //! chat.db へのアクセス経路を [`imessage`] に一本化する。
 
+pub mod facts;
 pub mod fewshot;
 pub mod imessage;
 pub mod llm;

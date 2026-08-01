@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { listKeyStatuses, listModels, type KeyStatus, type ModelSetting } from "./api";
 import ApiKeyRow from "./components/ApiKeyRow";
+import SelfProfile from "./components/SelfProfile";
 
 export default function App() {
   const [statuses, setStatuses] = useState<KeyStatus[] | null>(null);
@@ -32,7 +33,9 @@ export default function App() {
       </header>
 
       <main className="flex-1 overflow-y-auto">
-        <section>
+        <SelfProfile />
+
+        <section className="border-t border-neutral-200 dark:border-neutral-700">
           <h2 className="px-4 pt-4 pb-2 text-xs font-semibold tracking-wide text-neutral-500 uppercase dark:text-neutral-400">
             APIキー
           </h2>

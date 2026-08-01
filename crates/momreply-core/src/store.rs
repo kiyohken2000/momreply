@@ -145,6 +145,24 @@ CREATE TABLE IF NOT EXISTS standing_answers (
   UNIQUE(target_id, kind)
 );
 
+-- self.md への追記候補。**承認するまで反映しない。**
+-- self.md は AI が事実として断定する唯一の材料なので、誤りが入ると
+-- 以後すべての生成が汚染される（仕様書 6.7 と同じ理由）。
+CREATE TABLE IF NOT EXISTS fact_candidates (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  section       TEXT    NOT NULL,           -- 事実|答えたくないこと|伝え方
+  content       TEXT    NOT NULL,
+  -- 根拠になったやり取り。人が正しさを判断するために必ず持たせる。
+  evidence_ask  TEXT,
+  evidence_reply TEXT,
+  source_rowid  INTEGER,
+  source_chat   TEXT,
+  confidence    TEXT    NOT NULL DEFAULT 'medium',
+  status        TEXT    NOT NULL DEFAULT 'pending',  -- pending|approved|rejected
+  created_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fact_status ON fact_candidates(status);
+
 CREATE TABLE IF NOT EXISTS kv (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -224,6 +242,20 @@ pub struct GenerationRecord<'a> {
     pub user_instruction: Option<&'a str>,
     pub output: Option<&'a str>,
     pub error: Option<&'a str>,
+}
+
+/// `self.md` への追記候補。**承認するまで反映しない。**
+#[derive(Debug, Clone)]
+pub struct FactCandidate {
+    pub id: i64,
+    pub section: String,
+    pub content: String,
+    /// 根拠になったやり取り。人が正しさを判断するのに要る。
+    pub evidence_ask: Option<String>,
+    pub evidence_reply: Option<String>,
+    pub source_rowid: Option<i64>,
+    pub source_chat: Option<String>,
+    pub confidence: String,
 }
 
 /// 相手ごとの実行状態。
@@ -811,6 +843,90 @@ impl Store {
                 model,
                 now,
             ),
+        )?;
+        Ok(())
+    }
+
+    // MARK: self.md への追記候補
+
+    /// 候補を積む。同じ内容が既にあれば積まない。
+    pub fn add_fact_candidate(&self, c: &FactCandidate) -> Result<bool> {
+        let exists: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM fact_candidates WHERE content = ?1 AND status != 'rejected'",
+            [&c.content],
+            |r| r.get(0),
+        )?;
+        if exists > 0 {
+            return Ok(false);
+        }
+        self.conn.execute(
+            "INSERT INTO fact_candidates
+               (section, content, evidence_ask, evidence_reply, source_rowid,
+                source_chat, confidence, status, created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,'pending',?8)",
+            (
+                &c.section,
+                &c.content,
+                &c.evidence_ask,
+                &c.evidence_reply,
+                c.source_rowid,
+                &c.source_chat,
+                &c.confidence,
+                now_unix(),
+            ),
+        )?;
+        Ok(true)
+    }
+
+    pub fn pending_facts(&self) -> Result<Vec<FactCandidate>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, section, content, evidence_ask, evidence_reply,
+                    source_rowid, source_chat, confidence
+             FROM fact_candidates WHERE status = 'pending' ORDER BY confidence DESC, id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(FactCandidate {
+                id: r.get(0)?,
+                section: r.get(1)?,
+                content: r.get(2)?,
+                evidence_ask: r.get(3)?,
+                evidence_reply: r.get(4)?,
+                source_rowid: r.get(5)?,
+                source_chat: r.get(6)?,
+                confidence: r.get(7)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn fact_candidate(&self, id: i64) -> Result<Option<FactCandidate>> {
+        self.conn
+            .query_row(
+                "SELECT id, section, content, evidence_ask, evidence_reply,
+                        source_rowid, source_chat, confidence
+                 FROM fact_candidates WHERE id = ?1",
+                [id],
+                |r| {
+                    Ok(FactCandidate {
+                        id: r.get(0)?,
+                        section: r.get(1)?,
+                        content: r.get(2)?,
+                        evidence_ask: r.get(3)?,
+                        evidence_reply: r.get(4)?,
+                        source_rowid: r.get(5)?,
+                        source_chat: r.get(6)?,
+                        confidence: r.get(7)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn set_fact_status(&self, id: i64, status: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE fact_candidates SET status = ?2 WHERE id = ?1",
+            (id, status),
         )?;
         Ok(())
     }

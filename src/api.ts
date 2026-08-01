@@ -46,6 +46,41 @@ export function canEnableAutoSend(): Promise<boolean> {
   return invoke("can_enable_auto_send");
 }
 
+/** `self.md` の全文。AI が事実として断定してよい唯一の材料。 */
+export function getSelfProfile(): Promise<string> {
+  return invoke("get_self_profile");
+}
+
+export function setSelfProfile(content: string): Promise<void> {
+  return invoke("set_self_profile", { content });
+}
+
+export function selfProfilePath(): Promise<string> {
+  return invoke("self_profile_path");
+}
+
+export type FactCandidate = {
+  id: number;
+  section: string;
+  content: string;
+  confidence: string;
+  evidence_ask: string | null;
+  evidence_reply: string | null;
+};
+
+export function listFactCandidates(): Promise<FactCandidate[]> {
+  return invoke("list_fact_candidates");
+}
+
+/** 承認すると self.md に追記され、更新後の全文が返る。 */
+export function approveFact(id: number): Promise<string> {
+  return invoke("approve_fact", { id });
+}
+
+export function rejectFact(id: number): Promise<void> {
+  return invoke("reject_fact", { id });
+}
+
 export type ModelSetting = {
   provider: string;
   model: string;

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use momreply_core::{
-    fewshot, imessage,
+    facts, fewshot, imessage,
     pipeline::{self, LengthPreset},
     profile,
     questions::{self, QuestionKind},
@@ -71,6 +71,9 @@ enum Command {
         #[arg(long, default_value = "MomReply の送信テストです")]
         text: String,
     },
+    /// self.md への追記候補を扱う。**承認するまで反映しない。**
+    #[command(subcommand)]
+    Facts(FactCmd),
     /// 生成に使う設定を確認・変更する。
     Config {
         /// 主プロバイダ（anthropic|gemini|openai）。
@@ -106,6 +109,35 @@ enum Command {
         /// 値を渡すとその指示で書き直す。空文字なら同じ条件でやり直す。
         #[arg(long)]
         redo: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum FactCmd {
+    /// 過去のやり取りから候補を抽出する。
+    ///
+    /// **指定した会話しか読まない。** `--handle` は `chats` の
+    /// CHAT_IDENTIFIER をそのまま渡す。複数指定可。
+    Scan {
+        #[arg(long, required = true)]
+        handle: Vec<String>,
+        #[arg(long, default_value_t = 1000)]
+        scan: u32,
+        /// 抽出に回すペア数の上限。費用と外部に出る量を抑える。
+        #[arg(long, default_value_t = 60)]
+        max_pairs: usize,
+    },
+    /// 未承認の候補を根拠つきで並べる。
+    List,
+    /// 候補を承認して self.md に追記する。
+    Approve {
+        #[arg(long)]
+        id: i64,
+    },
+    /// 候補を却下する。
+    Reject {
+        #[arg(long)]
+        id: i64,
     },
 }
 
@@ -204,6 +236,7 @@ async fn main() -> Result<()> {
             cmd_watch(&chat_db, &chat_db_path, &slug, live, once).await
         }
         Command::SendTest { to, text } => cmd_send_test(&chat_db, &to, &text),
+        Command::Facts(cmd) => cmd_facts(&chat_db, cmd).await,
         Command::Config { primary, user_name } => cmd_config(primary, user_name),
         Command::Fewshot { slug, limit, scan } => cmd_fewshot(&chat_db, &slug, limit, scan),
         Command::Generate {
@@ -213,6 +246,77 @@ async fn main() -> Result<()> {
             redo,
         } => cmd_generate(&chat_db, &slug, rowid, length.as_deref(), redo).await,
     }
+}
+
+async fn cmd_facts(chat_db: &rusqlite::Connection, cmd: FactCmd) -> Result<()> {
+    let store = Store::open_default()?;
+
+    match cmd {
+        FactCmd::Scan {
+            handle,
+            scan,
+            max_pairs,
+        } => {
+            let known: Vec<String> = imessage::list_chats(chat_db, 10_000)?
+                .into_iter()
+                .map(|c| c.chat_identifier)
+                .collect();
+            for h in &handle {
+                if !known.contains(h) {
+                    bail!("chat.db に '{h}' の会話がありません");
+                }
+            }
+
+            println!("走査する会話: {}", handle.join(", "));
+            println!("これらの会話の「質問と自分の返信」が LLM に送られます。");
+            println!();
+
+            let report = facts::scan(chat_db, &store, &handle, scan, max_pairs).await?;
+            println!("質問に答えたやり取り {} 件を検査（{} 回の呼び出し）",
+                report.pairs_examined, report.batches);
+            println!("新しい候補: {} 件", report.candidates_added);
+            if report.candidates_added > 0 {
+                println!();
+                println!("確認する: ./scripts/cli.sh facts list");
+            }
+        }
+
+        FactCmd::List => {
+            let pending = store.pending_facts()?;
+            if pending.is_empty() {
+                println!("未承認の候補はありません。");
+                return Ok(());
+            }
+            println!("未承認 {} 件（承認するまで self.md には反映されません）", pending.len());
+            println!();
+            for c in &pending {
+                println!("#{:<4} [{}] {} / {}", c.id, c.confidence, c.section, c.content);
+                if let (Some(ask), Some(reply)) = (&c.evidence_ask, &c.evidence_reply) {
+                    println!("      根拠: 「{}」", ask.replace('\n', " "));
+                    println!("          → 「{}」", reply.replace('\n', " "));
+                }
+                println!();
+            }
+            println!("承認: ./scripts/cli.sh facts approve --id <ID>");
+            println!("却下: ./scripts/cli.sh facts reject --id <ID>");
+        }
+
+        FactCmd::Approve { id } => {
+            let c = store
+                .fact_candidate(id)?
+                .with_context(|| format!("候補 #{id} がありません"))?;
+            profile::append_to_section(&c.section, &c.content)?;
+            store.set_fact_status(id, "approved")?;
+            println!("self.md の「{}」に追記しました:", c.section);
+            println!("  - {}", c.content);
+        }
+
+        FactCmd::Reject { id } => {
+            store.set_fact_status(id, "rejected")?;
+            println!("候補 #{id} を却下しました。");
+        }
+    }
+    Ok(())
 }
 
 async fn cmd_watch(

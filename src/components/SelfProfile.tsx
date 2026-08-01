@@ -21,16 +21,28 @@ export default function SelfProfile() {
   const [candidates, setCandidates] = useState<FactCandidate[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [candidateError, setCandidateError] = useState<string | null>(null);
 
+  // 2 つは独立して読む。まとめて待つと、候補の取得に失敗しただけで
+  // 本文が null のままになり、編集も保存もできなくなる。
   const load = useCallback(async () => {
     try {
-      const [content, facts] = await Promise.all([getSelfProfile(), listFactCandidates()]);
+      const content = await getSelfProfile();
       setText(content);
       setSaved(content);
-      setCandidates(facts);
       setError(null);
     } catch (e) {
-      setError(String(e));
+      setError(`self.md を読めません: ${e}`);
+      // 読めなくても編集はできるようにしておく。
+      setText("");
+      setSaved("");
+    }
+
+    try {
+      setCandidates(await listFactCandidates());
+      setCandidateError(null);
+    } catch (e) {
+      setCandidateError(String(e));
     }
   }, []);
 
@@ -38,7 +50,8 @@ export default function SelfProfile() {
     void load();
   }, [load]);
 
-  const dirty = text !== null && text !== saved;
+  const loading = text === null;
+  const dirty = !loading && text !== saved;
 
   async function save() {
     if (text === null) return;
@@ -85,6 +98,11 @@ export default function SelfProfile() {
       </p>
 
       {error && <p className="px-4 pb-2 text-xs break-words text-red-600">{error}</p>}
+      {candidateError && (
+        <p className="px-4 pb-2 text-xs break-words text-amber-600">
+          追記候補を読めません: {candidateError}
+        </p>
+      )}
 
       {candidates.length > 0 && (
         <div className="mx-4 mb-3 rounded border border-amber-300 bg-amber-50 p-2 dark:border-amber-700 dark:bg-amber-950/40">
@@ -130,21 +148,28 @@ export default function SelfProfile() {
         <textarea
           value={text ?? ""}
           onChange={(e) => setText(e.target.value)}
-          disabled={text === null || busy}
+          disabled={loading || busy}
+          placeholder={loading ? "読み込み中…" : undefined}
           spellCheck={false}
-          rows={12}
+          rows={10}
           className="w-full rounded border border-neutral-300 p-2 font-mono text-xs leading-relaxed disabled:opacity-50 dark:border-neutral-600 dark:bg-neutral-800"
         />
         <div className="mt-2 flex items-center gap-2">
+          {/* 変更が無くても押せるようにする。押せない理由が画面から
+              分からないと、壊れているのか仕様なのか区別できない。 */}
           <button
             type="button"
             onClick={() => void save()}
-            disabled={!dirty || busy}
+            disabled={loading || busy}
             className="rounded bg-blue-600 px-3 py-1 text-xs text-white disabled:opacity-40"
           >
-            保存
+            {busy ? "保存中…" : "保存"}
           </button>
-          {dirty && <span className="text-xs text-amber-600">未保存の変更があります</span>}
+          {dirty ? (
+            <span className="text-xs text-amber-600">未保存の変更があります</span>
+          ) : (
+            !loading && <span className="text-xs text-neutral-400">保存済み</span>
+          )}
         </div>
         <p className="mt-2 text-[11px] text-neutral-400">
           この内容は返信生成のたびに LLM へ送られます。外部に出て困ることは

@@ -195,6 +195,27 @@ pub struct PendingView {
     reason: Option<String>,
 }
 
+/// ログイン時の自動起動が有効か。
+///
+/// 状態は macOS の LaunchAgent が持つ。app.db には持たない。
+/// 二重に持つと、システム設定から外されたときにずれる。
+#[tauri::command]
+pub fn get_autostart(app: tauri::AppHandle) -> Result<bool, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let manager = app.autolaunch();
+    if enabled {
+        manager.enable().map_err(|e| e.to_string())
+    } else {
+        manager.disable().map_err(|e| e.to_string())
+    }
+}
+
 /// 保存された表示言語。未設定なら空文字を返し、画面側が OS の設定から決める。
 #[tauri::command]
 pub fn get_ui_language() -> Result<String, String> {
@@ -960,6 +981,7 @@ pub fn update_target(
     slug: String,
     auto_send: Option<bool>,
     reply_preset: Option<String>,
+    display_name: Option<String>,
 ) -> Result<(), String> {
     let store = Store::open_default().map_err(|e| e.to_string())?;
     let target = store
@@ -974,6 +996,11 @@ pub fn update_target(
             return Err("APIキーが設定されていません".into());
         }
         store.set_auto_send(target.id, v).map_err(|e| e.to_string())?;
+    }
+    if let Some(name) = display_name {
+        store
+            .set_display_name(target.id, &name)
+            .map_err(|e| e.to_string())?;
     }
     if let Some(p) = reply_preset {
         momreply_core::pipeline::LengthPreset::parse(&p)

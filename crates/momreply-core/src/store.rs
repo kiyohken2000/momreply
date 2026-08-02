@@ -432,6 +432,23 @@ impl Store {
         Ok(())
     }
 
+    /// 表示名を変える。
+    ///
+    /// **プロンプトにそのまま入る**（「〇〇からの iMessage に返信を書きます」）。
+    /// 登録時は会話一覧の名前が入るが、ハンドルしか無い相手だと
+    /// メールアドレスがそのまま人格の呼び名になる。
+    pub fn set_display_name(&self, target_id: i64, name: &str) -> Result<()> {
+        let name = name.trim();
+        if name.is_empty() {
+            bail!("表示名を空にはできない");
+        }
+        self.conn.execute(
+            "UPDATE targets SET display_name = ?2, updated_at = ?3 WHERE id = ?1",
+            (target_id, name, now_unix()),
+        )?;
+        Ok(())
+    }
+
     pub fn set_reply_preset(&self, target_id: i64, preset: &str) -> Result<()> {
         self.conn.execute(
             "UPDATE targets SET reply_preset = ?2, updated_at = ?3 WHERE id = ?1",

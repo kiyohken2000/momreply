@@ -21,6 +21,12 @@ pub const EVENT_UPDATED: &str = "momreply://updated";
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_positioner::init())
+        // ログイン時に自動で起動する（既定は無効）。
+        // 再起動のたびに手で立ち上げ直すのでは、放置して使えない。
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             tray::setup(app.handle())?;
@@ -46,6 +52,8 @@ pub fn run() {
             commands::reject_fact,
             commands::chat_db_status,
             commands::get_ui_language,
+            commands::get_autostart,
+            commands::set_autostart,
             commands::set_ui_language,
             commands::open_full_disk_access_settings,
             commands::list_pending,

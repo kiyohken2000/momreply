@@ -182,6 +182,11 @@ const DICT = {
     ja: "{name} を削除すると、処理履歴と文体の手本もまとめて消えます。元に戻せません。",
     en: "Deleting {name} also removes its history and style examples. This cannot be undone.",
   },
+  "targets.rename": { ja: "名前を変える", en: "Rename" },
+  "targets.renameNote": {
+    ja: "この名前がそのまま生成に使われます（「〇〇からの iMessage に返信を書きます」）。",
+    en: "This name is used in the prompt as-is (\"writing a reply to X\").",
+  },
   "targets.length": { ja: "長さ", en: "Length" },
   "targets.targetChars": { ja: "目標文字数", en: "Target length" },
   "targets.charsUnit": { ja: "文字", en: "chars" },
@@ -292,6 +297,14 @@ const DICT = {
   "settings.perTargetNote": {
     ja: "相手ごとの設定でも自動送信を切れます。",
     en: "Auto-send can also be turned off per contact.",
+  },
+  "settings.autostart": {
+    ja: "ログイン時に自動で起動する",
+    en: "Start automatically at login",
+  },
+  "settings.autostartNote": {
+    ja: "入れておかないと、Mac を再起動するたびに手で立ち上げ直すことになります。",
+    en: "Without this you have to launch it by hand after every restart.",
   },
   "settings.provider": { ja: "生成に使うAI", en: "Model provider" },
   "settings.providerNote": {

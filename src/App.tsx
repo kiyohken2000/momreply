@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   chatDbStatus,
+  getAutostart,
+  setAutostart,
   getPrimaryProvider,
   getRunMode,
   listKeyStatuses,
@@ -40,6 +42,7 @@ export default function App() {
   const [providers, setProviders] = useState<ProviderChoice[]>([]);
   const [primary, setPrimary] = useState<string>("");
   const [access, setAccess] = useState<ChatDbStatus | null>(null);
+  const [autostart, setAutostartState] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // 権限が無いと何もできない。他の読み込みと独立させておかないと、
@@ -71,6 +74,14 @@ export default function App() {
       setProviders(pv);
       setPrimary(pr);
       setError(null);
+    } catch (e) {
+      setError(String(e));
+    }
+
+    // 自動起動は別に読む。まとめて待つと、ここが失敗しただけで
+    // キーの一覧まで出なくなる。
+    try {
+      setAutostartState(await getAutostart());
     } catch (e) {
       setError(String(e));
     }
@@ -204,6 +215,31 @@ export default function App() {
                           ? t("settings.needVerifiedKey")
                           : t("settings.perTargetNote")}
                     </p>
+
+                    {/* 常駐しないと意味が無いアプリなので、動作モードと
+                        同じ場所に置く。 */}
+                    {autostart !== null && (
+                      <>
+                        <label className="mt-3 flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={autostart}
+                            onChange={(e) => {
+                              const next = e.target.checked;
+                              setAutostartState(next);
+                              void setAutostart(next).catch((err) => {
+                                setError(String(err));
+                                setAutostartState(!next);
+                              });
+                            }}
+                          />
+                          <span className="text-xs">{t("settings.autostart")}</span>
+                        </label>
+                        <p className="mt-1 text-[11px] text-neutral-400">
+                          {t("settings.autostartNote")}
+                        </p>
+                      </>
+                    )}
                   </div>
                 )}
 

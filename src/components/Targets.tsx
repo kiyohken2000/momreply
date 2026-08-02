@@ -221,13 +221,16 @@ export default function Targets() {
           className="border-b border-neutral-200 px-4 py-3 dark:border-neutral-700"
         >
           <div className="flex items-baseline justify-between gap-2">
-            <span className="text-sm font-medium">{x.display_name}</span>
+            <DisplayName
+              value={x.display_name}
+              onChange={(name) => void patch(x.slug, { displayName: name })}
+            />
             <button
               type="button"
               onClick={() => setConfirmRemove(x.slug)}
               className="shrink-0 text-[11px] text-neutral-400 hover:text-red-600"
             >
-              削除
+              {t("common.delete")}
             </button>
           </div>
           <div className="text-[11px] break-all text-neutral-400">
@@ -538,5 +541,73 @@ function TargetChars({
           : t("targets.charsHintSet")}
       </p>
     </div>
+  );
+}
+
+/**
+ * 表示名。**プロンプトにそのまま入る。**
+ *
+ * 「〇〇からの iMessage に返信を書きます」の〇〇がこれ。会話一覧に名前が
+ * 無い相手だと、登録時にメールアドレスが入り、それが人格の呼び名になる。
+ *
+ * 入力のたびに保存すると、1 文字消した瞬間に空で保存しようとする。
+ * 確定は blur と Enter のときだけにする。
+ */
+function DisplayName({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (name: string) => void;
+}) {
+  const { t } = useLang();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+
+  useEffect(() => setDraft(value), [value]);
+
+  function commit() {
+    setEditing(false);
+    const next = draft.trim();
+    // 空にはできない。名前が消えるとプロンプトが壊れる。
+    if (!next) {
+      setDraft(value);
+      return;
+    }
+    if (next !== value) onChange(next);
+  }
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        onClick={() => setEditing(true)}
+        title={t("targets.renameNote")}
+        className="min-w-0 truncate text-left text-sm font-medium hover:underline"
+      >
+        {value}
+      </button>
+    );
+  }
+
+  return (
+    <input
+      type="text"
+      autoFocus
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          e.currentTarget.blur();
+        }
+        if (e.key === "Escape") {
+          setDraft(value);
+          setEditing(false);
+        }
+      }}
+      className="min-w-0 flex-1 rounded border border-neutral-300 px-1.5 py-0.5 text-sm dark:border-neutral-600 dark:bg-neutral-800"
+    />
   );
 }

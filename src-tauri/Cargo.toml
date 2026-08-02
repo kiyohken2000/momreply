@@ -30,3 +30,4 @@ tokio.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 rusqlite.workspace = true
+tauri-plugin-autostart = "2"

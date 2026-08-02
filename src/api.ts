@@ -49,6 +49,15 @@ export function canEnableAutoSend(): Promise<boolean> {
   return invoke("can_enable_auto_send");
 }
 
+/** ログイン時の自動起動。状態は macOS の LaunchAgent が持つ。 */
+export function getAutostart(): Promise<boolean> {
+  return invoke("get_autostart");
+}
+
+export function setAutostart(enabled: boolean): Promise<void> {
+  return invoke("set_autostart", { enabled });
+}
+
 /** 保存された表示言語。未設定なら空文字。 */
 export function getUiLanguage(): Promise<string> {
   return invoke("get_ui_language");
@@ -280,12 +289,13 @@ export function removeTarget(slug: string): Promise<void> {
 
 export function updateTarget(
   slug: string,
-  patch: { autoSend?: boolean; replyPreset?: string },
+  patch: { autoSend?: boolean; replyPreset?: string; displayName?: string },
 ): Promise<void> {
   return invoke("update_target", {
     slug,
     autoSend: patch.autoSend ?? null,
     replyPreset: patch.replyPreset ?? null,
+    displayName: patch.displayName ?? null,
   });
 }
 

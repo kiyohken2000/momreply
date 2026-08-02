@@ -101,10 +101,101 @@ export default function Targets() {
     return <p className="px-4 py-4 text-xs text-neutral-400">読み込み中…</p>;
   }
 
+  /*
+   * 相手の追加。会話一覧から選ぶ。手打ちさせない（仕様書 10.2-3）。
+   *
+   * 1 人登録済みでも消さない。消すと、別の人に切り替えるには一度削除する
+   * しかなくなり、処理履歴と文体の手本（数十組）が道連れになる。
+   * 代わりに、既に相手がいるときは一覧の**下**へ小さく置く。
+   */
+  const addBlock = (first: boolean) => (
+    <>
+      {!adding ? (
+        <button
+          type="button"
+          onClick={() => void openAdd()}
+          className={
+            // 1 人目はここからしか始められない。まだ誰もいないときだけ目立たせる。
+            first
+              ? "rounded border border-neutral-300 px-2 py-1 text-xs dark:border-neutral-600"
+              : "text-xs text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-100"
+          }
+        >
+          {first ? "+ 相手を追加" : "+ 別の相手を追加"}
+        </button>
+      ) : (
+        <div>
+          <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
+            会話を選ぶ（本文は読み込みません）
+          </div>
+          <select
+            value={picked}
+            onChange={(e) => {
+              setPicked(e.target.value);
+              const c = chats?.find(
+                (x) => x.chat_identifier === e.target.value,
+              );
+              if (c && !newName)
+                setNewName(c.display_name || c.chat_identifier);
+            }}
+            className="mt-1 w-full rounded border border-neutral-300 px-2 py-1 text-xs dark:border-neutral-600 dark:bg-neutral-800"
+          >
+            <option value="">選択してください</option>
+            {(chats ?? [])
+              .filter((c) => !c.registered)
+              .map((c) => (
+                <option key={c.chat_identifier} value={c.chat_identifier}>
+                  {c.display_name || c.chat_identifier} ({c.message_count}件
+                  {c.last_message ? ` / ${c.last_message}` : ""})
+                </option>
+              ))}
+          </select>
+
+          <input
+            type="text"
+            value={newName}
+            onChange={(e) => setNewName(e.target.value)}
+            placeholder="表示名"
+            className="mt-2 w-full rounded border border-neutral-300 px-2 py-1 text-xs dark:border-neutral-600 dark:bg-neutral-800"
+          />
+
+          <p className="mt-1 text-[10px] text-neutral-400">
+            登録した時点より前のメッセージは処理されません。過去分に一斉返信する
+            事故を防ぐためです。
+          </p>
+
+          <div className="mt-2 flex gap-2">
+            <button
+              type="button"
+              disabled={!picked || !newName.trim()}
+              onClick={() => void submitAdd()}
+              className="rounded bg-blue-600 px-3 py-1 text-xs text-white disabled:opacity-40"
+            >
+              登録
+            </button>
+            <button
+              type="button"
+              onClick={() => setAdding(false)}
+              className="text-xs text-neutral-500 dark:text-neutral-400"
+            >
+              やめる
+            </button>
+          </div>
+        </div>
+      )}
+    </>
+  );
+
   return (
     <div className="h-full overflow-y-auto pb-4">
-      {error && <p className="px-4 pt-3 text-xs break-words text-red-600">{error}</p>}
-      {message && <p className="px-4 pt-3 text-xs break-words text-green-600">{message}</p>}
+      {error && (
+        <p className="px-4 pt-3 text-xs break-words text-red-600">{error}</p>
+      )}
+      {message && (
+        <p className="px-4 pt-3 text-xs break-words text-green-600">
+          {message}
+        </p>
+      )}
 
       {targets.length === 0 && !adding && (
         <p className="px-4 py-4 text-xs text-neutral-400">
@@ -112,74 +203,11 @@ export default function Targets() {
         </p>
       )}
 
-      {/* 相手の追加。会話一覧から選ぶ。手打ちさせない（仕様書 10.2-3）。 */}
-      <div className="border-b border-neutral-200 px-4 py-3 dark:border-neutral-700">
-        {!adding ? (
-          <button
-            type="button"
-            onClick={() => void openAdd()}
-            className="rounded border border-neutral-300 px-2 py-1 text-xs dark:border-neutral-600"
-          >
-            + 相手を追加
-          </button>
-        ) : (
-          <div>
-            <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
-              会話を選ぶ（本文は読み込みません）
-            </div>
-            <select
-              value={picked}
-              onChange={(e) => {
-                setPicked(e.target.value);
-                const c = chats?.find((x) => x.chat_identifier === e.target.value);
-                if (c && !newName) setNewName(c.display_name || c.chat_identifier);
-              }}
-              className="mt-1 w-full rounded border border-neutral-300 px-2 py-1 text-xs dark:border-neutral-600 dark:bg-neutral-800"
-            >
-              <option value="">選択してください</option>
-              {(chats ?? [])
-                .filter((c) => !c.registered)
-                .map((c) => (
-                  <option key={c.chat_identifier} value={c.chat_identifier}>
-                    {c.display_name || c.chat_identifier} ({c.message_count}件
-                    {c.last_message ? ` / ${c.last_message}` : ""})
-                  </option>
-                ))}
-            </select>
-
-            <input
-              type="text"
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              placeholder="表示名"
-              className="mt-2 w-full rounded border border-neutral-300 px-2 py-1 text-xs dark:border-neutral-600 dark:bg-neutral-800"
-            />
-
-            <p className="mt-1 text-[10px] text-neutral-400">
-              登録した時点より前のメッセージは処理されません。過去分に一斉返信する
-              事故を防ぐためです。
-            </p>
-
-            <div className="mt-2 flex gap-2">
-              <button
-                type="button"
-                disabled={!picked || !newName.trim()}
-                onClick={() => void submitAdd()}
-                className="rounded bg-blue-600 px-3 py-1 text-xs text-white disabled:opacity-40"
-              >
-                登録
-              </button>
-              <button
-                type="button"
-                onClick={() => setAdding(false)}
-                className="text-xs text-neutral-500 dark:text-neutral-400"
-              >
-                やめる
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
+      {targets.length === 0 && (
+        <div className="border-b border-neutral-200 px-4 py-3 dark:border-neutral-700">
+          {addBlock(true)}
+        </div>
+      )}
 
       {targets.map((t) => (
         <section
@@ -196,13 +224,16 @@ export default function Targets() {
               削除
             </button>
           </div>
-          <div className="text-[11px] break-all text-neutral-400">{t.handles.join(", ")}</div>
+          <div className="text-[11px] break-all text-neutral-400">
+            {t.handles.join(", ")}
+          </div>
 
           {/* 手本が無いと文体が再現されない。0 のときは目立たせる。 */}
           <div className="mt-1 flex items-center gap-2">
             <span
               className={
-                "text-[11px] " + (t.fewshot_count === 0 ? "text-amber-600" : "text-neutral-400")
+                "text-[11px] " +
+                (t.fewshot_count === 0 ? "text-amber-600" : "text-neutral-400")
               }
             >
               文体の手本 {t.fewshot_count} 組
@@ -254,7 +285,9 @@ export default function Targets() {
           )}
 
           <div className="mt-2">
-            <div className="text-[11px] text-neutral-500 dark:text-neutral-400">長さ</div>
+            <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
+              長さ
+            </div>
             <div className="mt-1 flex flex-wrap gap-1">
               {LENGTH_PRESETS.map((p) => (
                 <button
@@ -278,7 +311,8 @@ export default function Targets() {
                 void patch(t.slug, {
                   // 空にしたらプリセットへ戻す。長さの指定が
                   // 何も無い状態は作らない。
-                  replyPreset: chars === null ? "mirror" : `${CHARS_PREFIX}${chars}`,
+                  replyPreset:
+                    chars === null ? "mirror" : `${CHARS_PREFIX}${chars}`,
                 })
               }
             />
@@ -290,7 +324,9 @@ export default function Targets() {
               type="checkbox"
               className="mt-0.5"
               checked={t.auto_send}
-              onChange={(e) => void patch(t.slug, { autoSend: e.target.checked })}
+              onChange={(e) =>
+                void patch(t.slug, { autoSend: e.target.checked })
+              }
             />
             <span className="text-xs">
               自動で送信する
@@ -302,6 +338,14 @@ export default function Targets() {
           </label>
         </section>
       ))}
+
+      {/* 2 人目以降はここから。一覧の上に置くと、いつも使う相手より
+          先に「追加」が目に入る。 */}
+      {targets.length > 0 && (
+        <div className="border-b border-neutral-200 px-4 py-3 dark:border-neutral-700">
+          {addBlock(false)}
+        </div>
+      )}
 
       {limits && (
         <section className="px-4 py-3">

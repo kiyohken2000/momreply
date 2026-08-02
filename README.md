@@ -5,8 +5,9 @@
 生成した返信は、確認したうえで送るか、条件を満たせば自動で送る。
 返信対象は chat.db の会話一覧から任意に選べる。
 
-> **状態: 開発中。** 生成・送信・メニューバー UI まで動く。
-> 全自動での運用（ガード一式）はまだ検証中。
+> **状態: 動く。ただし配布の体裁はまだ。**
+> 受信 → 生成 → 自動送信 → 送信結果の検証まで、実際のやり取りで通っている。
+> ビルド済みアプリは配っていないので、使うには自分でビルドする。
 
 ---
 
@@ -32,9 +33,12 @@
 
 | | |
 |---|---|
-| OS | macOS（開発・検証は macOS 26.6） |
+| OS | macOS 13 以降（開発・検証は macOS 26.6） |
 | Rust | 1.95 以降（`libsqlite3-sys` が要求する） |
+| Node.js | 20 以降（フロントエンドのビルドに使う） |
+| Xcode Command Line Tools | `xcode-select --install` |
 | 権限 | フルディスクアクセス |
+| API キー | Anthropic / Google / OpenAI のいずれか 1 つ |
 
 Rust は rustup で入れる。Homebrew の `rust` では古い場合がある。
 
@@ -45,61 +49,104 @@ rustup default stable
 
 `rust-toolchain.toml` で stable に固定してあるので、リポジトリ内では自動で切り替わる。
 
+**ビルド済みのアプリは配っていない。** 自分でビルドする。
+iMessage の全文を読み、LLM へ送るツールなので、中身を見てから入れられるほうがいい。
+
 ### フルディスクアクセス
 
 chat.db（`~/Library/Messages/chat.db`）の読み取りに必要。
+**これが無いと、ファイルは存在するのに開けず、メッセージが 1 件も取れない。**
+
+付与する先は、アプリとして使うか開発中かで変わる。
+
+| | 追加するもの |
+|---|---|
+| ビルドした `.app` を使う | `MomReply.app` |
+| `cargo tauri dev` で動かす | ターミナル / VS Code など、`cargo` を起動するアプリ |
+| CLI を使う | 同上 |
 
 1. システム設定 → プライバシーとセキュリティ → フルディスクアクセス
-2. **`cargo` を起動するアプリ**（ターミナル / VS Code など）を追加して ON
-3. **そのアプリを完全に終了して再起動**（ウィンドウを閉じるだけでは反映されない）
+2. 上の表のものを追加して ON
+3. **完全に終了して起動し直す**（ウィンドウを閉じるだけでは反映されない）
 
-付与しないと `unable to open database file` で止まる。
+アプリ側にも案内画面がある。権限が無いときは他の画面より先にそれが出る。
 
 ---
 
 ## 使い方
 
-```sh
-cargo build
-```
-
-### 1. 会話相手を確認する
+### 1. ビルドする
 
 ```sh
-cargo run -p momreply-cli -- chats
+npm install
+./scripts/build.sh
 ```
 
-本文は読まず、`chat_identifier` と件数・最終日時だけを出す。
-
-### 2. 返信対象を登録する
+`target/release/bundle/macos/MomReply.app` ができる。
+`/Applications` にコピーして起動する。
 
 ```sh
-cargo run -p momreply-cli -- target add \
-  --slug someone --name 表示名 \
-  --handle someone@icloud.com
+cp -R target/release/bundle/macos/MomReply.app /Applications/
+open /Applications/MomReply.app
 ```
 
-電話番号と Apple ID で会話が 2 本に分かれている場合は `--handle` を複数指定する。
+メニューバーに吹き出しのアイコンが出る。Dock には出ない。
+
+> `scripts/build.sh` は、手元にコード署名証明書があればそれで署名し直す。
+> `cargo tauri build` が付ける ad-hoc 署名はビルドのたびに変わり、
+> Keychain の「常に許可」が毎回外れるため。
+
+### 2. フルディスクアクセスを許可する
+
+初回起動時に案内が出る。ボタンからシステム設定を開いて `MomReply` を追加し、
+**アプリを終了して開き直す。**
+
+### 3. API キーを入れる
+
+設定タブで、使うプロバイダのキーを入れる。保存すると疎通テストが走り、
+「検証済み」になれば使える。
+
+- キーは **Keychain にだけ**保存される。設定ファイルにもログにも書かない
+- 画面に出るのは末尾 4 文字だけ
+- キー本体を返すコマンドは存在しない
+
+### 4. 返信する相手を選ぶ
+
+相手タブで会話一覧から選ぶ。手打ちはしない。
 
 **登録した時点より前のメッセージは処理対象にならない。**
 過去の会話に一斉返信する事故を防ぐため、登録と同時にその時点の最新 ROWID を記録する。
+登録時に、その相手との過去のやり取りから文体の手本も作る。
+
+### 5. 動きを決める
+
+| 場所 | 設定 |
+|---|---|
+| 相手タブ | 返信の長さ（プリセット / 目標文字数）、自動送信の可否 |
+| 設定タブ | ドライラン、自動送信の全体スイッチ、使う AI |
+| 自分についてタブ | `self.md`（書き方の指示と、言い切ってよい事実） |
+
+**既定はドライラン ON・自動送信 OFF。** そのままだと生成して確認待ちに溜めるだけで、
+何も送らない。手で確認しながら様子を見てから、切り替える。
+
+### 何が起きているか
+
+| メニューバーのアイコン | 状態 |
+|---|---|
+| 吹き出し + 点 3 つ | 待受中 |
+| 輪郭だけ | 連投が続かないか待っている（45 秒） |
+| 塗りつぶし | 返信を作っている |
+
+### CLI（検証用）
+
+アプリと同じ `momreply-core` を使う。挙動を確かめるときに使う。
 
 ```sh
-cargo run -p momreply-cli -- target list
-cargo run -p momreply-cli -- target pending --slug someone   # 未処理の新着
-```
-
-### 3. 返信の長さを決める
-
-```sh
-cargo run -p momreply-cli -- target set --slug someone --preset long
-cargo run -p momreply-cli -- target set --slug someone --preset chars:400   # 目標文字数
-```
-
-### メッセージを直接見る
-
-```sh
-cargo run -p momreply-cli -- messages --handle someone@icloud.com --limit 20
+./scripts/cli.sh chats                                  # 会話一覧（本文は読まない）
+./scripts/cli.sh messages --handle x@icloud.com --limit 20
+./scripts/cli.sh burst --slug someone                   # 連投のまとめ方を見る
+./scripts/cli.sh target list
+./scripts/cli.sh target set --slug someone --preset chars:250
 ```
 
 ---
@@ -115,11 +162,24 @@ cargo run -p momreply-cli -- messages --handle someone@icloud.com --limit 20
   引数に chat.db 接続を必須化してあるため、迂回する経路が存在しない。
 - **対象外の相手は読み込まない。** allowlist は取得後のフィルタではなく
   SQL の `WHERE` 句で効かせる。
-- **自動送信の既定は OFF。**
+- **自動送信の既定は OFF。** ドライランの既定は ON。
 - 1 つのハンドルを 2 人の対象に登録できない（UNIQUE 制約）。
 
-未実装のガード（レートリミット、既返信チェック、スリープ復帰時の抑制、
-コスト上限、キルスイッチ）は送信機能と同時に入れる。仕様は `docs/momreply-spec.md` にある。
+送信まわりのガードは実装済みで、いずれも実運用で作動を確認している。
+
+| ガード | 効果 |
+|---|---|
+| 既返信チェック | 生成前と**送信直前**の 2 回。手で返信済みなら送らない |
+| クールダウン | 前回送信から 60 秒 |
+| 連続自動返信の上限 | 超えたら確認モードへ落ちる。カウントは手で戻せる |
+| 1 時間 / 24 時間あたりの上限 | 超えたら確認モードへ落ちる |
+| stale | 受信から時間が経ちすぎたものは自動送信しない |
+| 取り消しの再チェック | 生成中に相手が取り消したら送らない |
+| 送信結果の検証 | chat.db を見て確認する。確認できなくても**再送しない** |
+| 長さの暴走 | 上限を超えた生成は送らず確認へ |
+
+**金額の上限は現状ほぼ機能しない。** モデルの単価を登録していないため、
+消費額が常に 0 と計算される。歯止めになるのは件数のほうだけ。
 
 ---
 
@@ -159,13 +219,18 @@ crates/
 │       ├── imessage/       chat.db（read-only）
 │       ├── store.rs        app.db スキーマ・CRUD
 │       ├── pipeline/       プロンプト・ガード・生成・送信
+│       ├── llm/            Anthropic / Gemini / OpenAI
+│       ├── fewshot.rs      過去の自分の返信から文体の手本を作る
 │       ├── questions.rs    疑問文の切り出し
 │       ├── profile.rs      self.md / 相手プロファイル
 │       └── paths.rs        ファイル配置
-└── momreply-cli/           検証・管理 CLI
+├── momreply-cli/           検証・管理 CLI
+src-tauri/                  メニューバーアプリ（薄いシェル）
+src/                        画面（React）
 ```
 
-UI（Tauri）を載せたあとも、chat.db へのアクセスは `momreply-core::imessage` に一本化する。
+chat.db へのアクセスは `momreply-core::imessage` に一本化してある。
+接続を作る関数は 1 つしかなく、read-only 以外では開けない。
 
 ---
 
@@ -178,8 +243,16 @@ UI（Tauri）を載せたあとも、chat.db へのアクセスは `momreply-cor
   - [x] few-shot 抽出
   - [x] 返信生成
 - [x] **Phase 2** 送信 + メニューバー UI
-- [ ] **Phase 3** ガード + 全自動
+- [x] **Phase 3** ガード + 全自動（実受信で通しの自動送信を確認）
 - [ ] **Phase 4** プロファイル自動更新
+
+未着手・未完了:
+
+- Apple Intelligence（オンデバイス生成）
+- モデル単価の登録（金額上限が効かない原因）
+- 相手の表示名の変更 UI
+- 通知をタップしてポップオーバーを開く
+- Developer ID 署名と公証（ビルド済みアプリの配布）
 
 詳細な仕様と受け入れ基準は `docs/momreply-spec.md`。
 

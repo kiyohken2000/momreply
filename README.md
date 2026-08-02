@@ -25,11 +25,16 @@ iMessage の全文を読んで LLM へ送るツールなので、その道は残
 
 ## 画面
 
-| 相手ごとの設定 | 生成に使う AI とキー | 自分について |
-|---|---|---|
-| ![相手タブ](docs/images/contacts.jpg) | ![設定タブ](docs/images/settings.jpg) | ![自分についてタブ](docs/images/self.jpg) |
+| 返信 | 相手ごとの設定 |
+|---|---|
+| ![返信タブ](docs/images/replies.jpg) | ![相手タブ](docs/images/contacts.jpg) |
+
+| 生成に使う AI とキー | 自分について |
+|---|---|
+| ![設定タブ](docs/images/settings.jpg) | ![自分についてタブ](docs/images/self.jpg) |
 
 メニューバーから開くポップオーバー 1 枚に収まっている。Dock には出ない。
+確認待ちが無いときは、直近のやり取りと「返信を作る」ボタンが出る。
 
 ---
 

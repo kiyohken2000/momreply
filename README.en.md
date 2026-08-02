@@ -26,11 +26,17 @@ message history and sends parts of it to an LLM, so that path is kept open.
 
 ## Screens
 
-| Per-contact settings | Model and keys | About you |
-|---|---|---|
-| ![Contacts tab](docs/images/contacts.jpg) | ![Settings tab](docs/images/settings.jpg) | ![About-you tab](docs/images/self.jpg) |
+| Replies | Per-contact settings |
+|---|---|
+| ![Replies tab](docs/images/replies.jpg) | ![Contacts tab](docs/images/contacts.jpg) |
+
+| Model and keys | About you |
+|---|---|
+| ![Settings tab](docs/images/settings.jpg) | ![About-you tab](docs/images/self.jpg) |
 
 Everything lives in one popover from the menu bar. Nothing appears in the Dock.
+When nothing is waiting for review, it shows the recent exchange and a button to
+draft a reply.
 
 ---
 

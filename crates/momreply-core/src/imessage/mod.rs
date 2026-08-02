@@ -14,5 +14,6 @@ pub use reader::{
     Message, SkipReason,
 };
 pub use watcher::{
-    burst, burst_text, gap_detected, is_stale, plan, plan_with_burst, Passed, Plan, BURST_WINDOW,
+    burst, burst_text, gap_detected, is_settling, is_stale, plan, plan_with_burst, Passed, Plan,
+    BURST_WINDOW, SETTLE_MAX_WAIT, SETTLE_WINDOW,
 };

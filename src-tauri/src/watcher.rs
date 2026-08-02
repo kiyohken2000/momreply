@@ -67,6 +67,28 @@ fn tick(app: &AppHandle, chat_db: &rusqlite::Connection, gap: bool) -> anyhow::R
 
         let plan = imessage::plan_with_burst(chat_db, &target.handles, new, gap)?;
 
+        // 連投がそろうのを待つ。**カーソルも記録も動かさない。**
+        // ここで進めてしまうと、待っている間の分が二度と拾われない。
+        if let Some(m) = &plan.actionable {
+            let oldest = plan
+                .passed
+                .iter()
+                .filter(|(_, r)| *r != imessage::Passed::NotApplicable)
+                .map(|(m, _)| m.date)
+                .chain(std::iter::once(m.date))
+                .min()
+                .unwrap_or(m.date);
+            if imessage::is_settling(
+                m.date,
+                oldest,
+                chrono::Local::now(),
+                imessage::SETTLE_WINDOW,
+                imessage::SETTLE_MAX_WAIT,
+            ) {
+                continue;
+            }
+        }
+
         for (m, reason) in &plan.passed {
             if *reason == imessage::Passed::NotApplicable {
                 continue;

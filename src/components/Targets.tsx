@@ -6,6 +6,7 @@ import {
   listTargets,
   removeTarget,
   rebuildFewshot,
+  resetConsecutive,
   setLimit,
   targetChars,
   updateTarget,
@@ -257,6 +258,42 @@ export default function Targets() {
               作り直す
             </button>
           </div>
+
+          {/* いまどれだけ自動で送っているか。上限に当たって止まったとき、
+              ここを見ないと「壊れた」のか「止められた」のか分からない。 */}
+          <div className="mt-2 flex items-center gap-2">
+            <span className="flex-1 text-[11px] text-neutral-500 dark:text-neutral-400">
+              連続 {t.consecutive_auto}
+              {limits && ` / ${limits.max_consecutive_auto}`}
+              {" ・ "}1時間 {t.sent_last_hour}
+              {limits && ` / ${limits.max_per_hour}`}
+              {" ・ "}24時間 {t.sent_last_day}
+              {limits && ` / ${limits.max_per_day}`}
+            </span>
+            <button
+              type="button"
+              disabled={t.consecutive_auto === 0}
+              onClick={() =>
+                void (async () => {
+                  try {
+                    await resetConsecutive(t.slug);
+                    setMessage("連続カウントを 0 に戻しました。");
+                    await load();
+                  } catch (e) {
+                    setError(String(e));
+                  }
+                })()
+              }
+              className="rounded border border-neutral-300 px-2 py-0.5 text-[10px] disabled:opacity-40 dark:border-neutral-600"
+            >
+              連続を0に戻す
+            </button>
+          </div>
+          {limits && t.consecutive_auto >= limits.max_consecutive_auto && (
+            <p className="mt-1 text-[10px] text-amber-600">
+              上限に達しています。自動送信は止まり、確認待ちに溜まります。
+            </p>
+          )}
 
           {confirmRemove === t.slug && (
             <div className="mt-2 rounded border border-red-300 bg-red-50 p-2 dark:border-red-800 dark:bg-red-950/40">

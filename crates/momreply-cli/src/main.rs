@@ -341,7 +341,31 @@ async fn cmd_watch(
         let new = imessage::messages_after(chat_db, &target.handles, after)?;
         let plan = imessage::plan_with_burst(chat_db, &target.handles, new, gap)?;
 
-        for (m, reason) in &plan.passed {
+        // 連投がそろうのを待つ。**カーソルも記録も動かさない。**
+        // ここで進めてしまうと、待っている間の分が二度と拾われない。
+        // continue にすると ticker.wait() を飛ばして空回りするので、
+        // 待ちの判定だけ先に出しておく。
+        let settling = if let Some(m) = &plan.actionable {
+            let oldest = plan
+                .passed
+                .iter()
+                .filter(|(_, r)| *r != imessage::Passed::NotApplicable)
+                .map(|(m, _)| m.date)
+                .chain(std::iter::once(m.date))
+                .min()
+                .unwrap_or(m.date);
+            imessage::is_settling(
+                m.date,
+                oldest,
+                chrono::Local::now(),
+                imessage::SETTLE_WINDOW,
+                imessage::SETTLE_MAX_WAIT,
+            )
+        } else {
+            false
+        };
+
+        for (m, reason) in plan.passed.iter().filter(|_| !settling) {
             if *reason != imessage::Passed::NotApplicable {
                 let what = if *reason == imessage::Passed::Merged {
                     "連投としてまとめた"
@@ -361,7 +385,7 @@ async fn cmd_watch(
             }
         }
 
-        if let Some(message) = plan.actionable {
+        if let Some(message) = plan.actionable.filter(|_| !settling) {
             println!(
                 "[{}] 新着 #{} {}",
                 message.date.format("%H:%M:%S"),
@@ -387,7 +411,7 @@ async fn cmd_watch(
             }
         }
 
-        if let Some(rowid) = plan.next_seen_rowid {
+        if let Some(rowid) = plan.next_seen_rowid.filter(|_| !settling) {
             store.set_last_seen_rowid(target.id, rowid)?;
         }
 

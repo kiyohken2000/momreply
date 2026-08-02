@@ -562,6 +562,11 @@ pub struct TargetView {
     reply_preset: String,
     /// 文体の手本の数。0 だとその人らしさが出ない。
     fewshot_count: usize,
+    /// いま何回続けて自動返信しているか。上限に当たると確認モードに落ちる。
+    consecutive_auto: u32,
+    /// 直近 1 時間 / 24 時間の自動送信数。
+    sent_last_hour: u32,
+    sent_last_day: u32,
 }
 
 #[tauri::command]
@@ -573,6 +578,9 @@ pub fn list_targets() -> Result<Vec<TargetView>, String> {
         .into_iter()
         .map(|t| TargetView {
             fewshot_count: store.fewshot(t.id).map(|v| v.len()).unwrap_or(0),
+            consecutive_auto: store.target_runtime(t.id).map(|r| r.consecutive_auto).unwrap_or(0),
+            sent_last_hour: store.sent_within(t.id, 3600).unwrap_or(0),
+            sent_last_day: store.sent_within(t.id, 86_400).unwrap_or(0),
             slug: t.slug,
             display_name: t.display_name,
             handles: t.handles,
@@ -765,6 +773,24 @@ fn draft_latest_blocking(slug: &str) -> Result<String, String> {
     }
 
     Ok("返信タブに入れました".into())
+}
+
+/// 連続自動返信のカウントを 0 に戻す。
+///
+/// このカウントだけは手で戻せるようにしてある。上限に当たると自動送信が
+/// 止まって確認モードに落ちるが、放置して使うのが目的なので、
+/// 画面を見た人がその場で戻せないと再開の手段が無くなる。
+///
+/// **1 時間 / 24 時間あたりの件数は戻せない。** あれは実際の送信履歴から
+/// 数えているので、戻すには履歴を消すことになる。歯止めが嘘になる。
+#[tauri::command]
+pub fn reset_consecutive(slug: String) -> Result<(), String> {
+    let store = Store::open_default().map_err(|e| e.to_string())?;
+    let target = store
+        .target_by_slug(&slug)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("'{slug}' は登録されていません"))?;
+    store.reset_consecutive(target.id).map_err(|e| e.to_string())
 }
 
 /// 文体の手本を作り直す。会話が増えたときに使う。

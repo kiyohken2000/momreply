@@ -177,7 +177,19 @@ export type TargetView = {
   reply_preset: string;
   /** 文体の手本の数。0 だとその人らしさが出ない。 */
   fewshot_count: number;
+  /** いま何回続けて自動返信しているか。上限に当たると確認モードに落ちる。 */
+  consecutive_auto: number;
+  sent_last_hour: number;
+  sent_last_day: number;
 };
+
+/**
+ * 連続自動返信のカウントを 0 に戻す。
+ * 1 時間 / 24 時間あたりの件数は送信履歴から数えているので戻せない。
+ */
+export function resetConsecutive(slug: string): Promise<void> {
+  return invoke("reset_consecutive", { slug });
+}
 
 /**
  * 直近の受信で返信案を作り、確認待ち（返信タブ）に積む。

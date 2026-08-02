@@ -215,6 +215,49 @@ pub fn burst_text(messages: &[Message]) -> String {
         .join("\n")
 }
 
+/// 連投がそろうのを待つ時間。
+///
+/// 受信した瞬間に生成を始めると、生成中に届いた続きを取りこぼす。
+/// 実際に起きた形はこうだった。
+///
+/// ```text
+/// 13:26:52  相手  あなたの文章全くわからない   ← これで生成を開始
+/// 13:27:04  相手  あなたは、体調が悪い？        ← 生成中に到着
+/// 13:27:10  相手  山木戸？                     ← 生成中に到着
+/// 13:27:49  自分  （1 通目への返信を送信）
+/// 13:27:55        後の 2 件は already_replied で永久にスキップ
+/// ```
+///
+/// 既返信ガードは正しく働いている。問題は**返信を書き始めるのが早すぎる**
+/// ことのほうで、静かになるまで待てば [`burst`] が全部まとめられる。
+pub const SETTLE_WINDOW: Duration = Duration::from_secs(45);
+
+/// これ以上は待たない。
+///
+/// 相手が延々と送り続けている間、待ち続けると一度も返信できない。
+pub const SETTLE_MAX_WAIT: Duration = Duration::from_secs(5 * 60);
+
+/// まだ続きが来るかもしれないか。真なら今回は何もしない。
+///
+/// `newest` は返信対象、`oldest` は未処理のうち最も古い受信。
+/// 新しいものが来るたびに待ち直すが、`max_wait` で頭打ちにする。
+pub fn is_settling(
+    newest: DateTime<Local>,
+    oldest: DateTime<Local>,
+    now: DateTime<Local>,
+    window: Duration,
+    max_wait: Duration,
+) -> bool {
+    let elapsed = |t: DateTime<Local>| now.signed_duration_since(t).to_std().ok();
+    match (elapsed(newest), elapsed(oldest)) {
+        (Some(newest), Some(oldest)) => newest < window && oldest < max_wait,
+        // 受信時刻が未来。時計がずれている。
+        // 経過 0 として扱うと、いつまでも「たった今届いた」ままになり
+        // 一度も返信できなくなる。待たずに進める。
+        _ => false,
+    }
+}
+
 /// 受信からの経過が長いか（仕様書 6.4.2 stale guard）。
 ///
 /// 真なら自動送信せず確認に回す。返信するには古すぎる話に、
@@ -370,6 +413,47 @@ mod tests {
             skip: None,
             body_from_text_column: false,
         }
+    }
+
+    // MARK: 連投がそろうのを待つ
+
+    const SETTLE: Duration = Duration::from_secs(45);
+    const MAX_WAIT: Duration = Duration::from_secs(300);
+
+    fn t(secs: i64) -> DateTime<Local> {
+        Local.with_ymd_and_hms(2026, 8, 2, 13, 26, 52).unwrap() + chrono::Duration::seconds(secs)
+    }
+
+    /// 届いた直後に書き始めると、生成中に来た続きを取りこぼす。
+    #[test]
+    fn a_fresh_message_waits_for_the_rest() {
+        assert!(is_settling(t(0), t(0), t(10), SETTLE, MAX_WAIT));
+    }
+
+    #[test]
+    fn after_the_window_it_proceeds() {
+        assert!(!is_settling(t(0), t(0), t(46), SETTLE, MAX_WAIT));
+    }
+
+    /// 続きが来たら待ち直す。18 秒後の 3 通目で、待ちは仕切り直しになる。
+    #[test]
+    fn a_new_message_restarts_the_wait() {
+        // 1 通目から 40 秒。本来ならもうすぐ書き始めるところ。
+        // しかし 18 秒前に 3 通目が来ているので、まだ待つ。
+        assert!(is_settling(t(18), t(0), t(40), SETTLE, MAX_WAIT));
+    }
+
+    /// 送り続けられている間、待ち続けると一度も返信できない。
+    #[test]
+    fn the_wait_is_capped() {
+        // 直前にも届いているが、最初の 1 通から 5 分を超えた。
+        assert!(!is_settling(t(295), t(0), t(301), SETTLE, MAX_WAIT));
+    }
+
+    /// 時計が飛んで受信時刻が未来になっても、待ち続けない。
+    #[test]
+    fn a_future_timestamp_does_not_hang_the_wait() {
+        assert!(!is_settling(t(100), t(100), t(0), SETTLE, MAX_WAIT));
     }
 
     /// 連投の検証用。`at` は基準時刻からの経過秒。

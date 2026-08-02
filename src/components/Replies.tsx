@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  draftLatest,
   listPending,
+  listTargets,
   regenerate,
   sendReply,
   skipPending,
   LENGTH_PRESETS,
   type Pending,
+  type TargetView,
 } from "../api";
 
 /** 実行中の操作。何が起きているか分からない時間を作らないために持つ。 */
@@ -81,13 +84,9 @@ export default function Replies() {
     return <p className="px-4 py-4 text-xs text-neutral-400">読み込み中…</p>;
   }
 
+  // 確認待ちが無いときこそ、返信を作りたい。相手タブまで探しに行かせない。
   if (!current) {
-    return (
-      <div className="px-4 py-6 text-center">
-        <p className="text-xs text-neutral-400">確認待ちの返信はありません。</p>
-        {error && <p className="mt-2 text-xs break-words text-red-600">{error}</p>}
-      </div>
-    );
+    return <Empty onDrafted={load} />;
   }
 
   const generating = busy === "regen";
@@ -258,5 +257,81 @@ function Spinner({ light = false }: { light?: boolean }) {
         (light ? "border-white" : "border-neutral-400")
       }
     />
+  );
+}
+
+/**
+ * 確認待ちが 1 件も無いときの画面。
+ *
+ * ここに「返信を作る」を置く理由。相手が最後に送ってきたまま止まって
+ * いても、監視は登録より前のメッセージを拾わない（仕様書 6.1 の
+ * バックログ保護）。その状態で相手タブを探させるのは遠すぎる。
+ *
+ * 作った案は**必ず確認待ちに入る**。押しただけでは送信されない。
+ */
+function Empty({ onDrafted }: { onDrafted: () => Promise<void> }) {
+  const [targets, setTargets] = useState<TargetView[] | null>(null);
+  const [drafting, setDrafting] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    listTargets()
+      .then(setTargets)
+      .catch((e) => {
+        setError(String(e));
+        setTargets([]);
+      });
+  }, []);
+
+  async function make(slug: string) {
+    setDrafting(slug);
+    setError(null);
+    try {
+      await draftLatest(slug);
+      await onDrafted();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setDrafting(null);
+    }
+  }
+
+  return (
+    <div className="px-4 py-6">
+      <p className="text-center text-xs text-neutral-400">確認待ちの返信はありません。</p>
+
+      {targets !== null && targets.length === 0 && (
+        <p className="mt-3 text-center text-xs text-neutral-400">
+          相手タブで返信する相手を登録してください。
+        </p>
+      )}
+
+      {targets?.map((t) => (
+        <div key={t.slug} className="mt-3 text-center">
+          <button
+            type="button"
+            disabled={drafting !== null}
+            onClick={() => void make(t.slug)}
+            className="rounded bg-blue-600 px-3 py-1.5 text-xs text-white disabled:opacity-40"
+          >
+            {drafting === t.slug
+              ? "生成中…"
+              : `${t.display_name} の直近の受信に返信を作る`}
+          </button>
+        </div>
+      ))}
+
+      {targets !== null && targets.length > 0 && (
+        <p className="mt-2 text-center text-[11px] text-neutral-400">
+          作った案はここに入ります。送るかどうかは、見てから決められます。
+        </p>
+      )}
+      {drafting !== null && (
+        <p className="mt-2 text-center text-[11px] text-neutral-400">
+          数十秒かかることがあります。
+        </p>
+      )}
+      {error && <p className="mt-3 text-xs break-words text-red-600">{error}</p>}
+    </div>
   );
 }

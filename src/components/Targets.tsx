@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   addTarget,
-  draftLatest,
   getLimits,
   listChatChoices,
   listTargets,
@@ -20,7 +19,7 @@ import {
 } from "../api";
 
 /** 相手ごとの設定と、暴走を止める上限（仕様書 6.4.5）。 */
-export default function Targets({ onDrafted }: { onDrafted?: () => void }) {
+export default function Targets() {
   const [targets, setTargets] = useState<TargetView[] | null>(null);
   const [limits, setLimits] = useState<Limits | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -30,7 +29,6 @@ export default function Targets({ onDrafted }: { onDrafted?: () => void }) {
   const [picked, setPicked] = useState<string>("");
   const [newName, setNewName] = useState("");
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
-  const [drafting, setDrafting] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -284,35 +282,6 @@ export default function Targets({ onDrafted }: { onDrafted?: () => void }) {
                 })
               }
             />
-          </div>
-
-          {/* 返信案を確認待ちに積む。必ず人の確認を挟むので、押しても飛ばない。 */}
-          <div className="mt-3">
-            <button
-              type="button"
-              disabled={drafting !== null}
-              onClick={() =>
-                void (async () => {
-                  setDrafting(t.slug);
-                  setError(null);
-                  setMessage(null);
-                  try {
-                    setMessage(await draftLatest(t.slug));
-                    onDrafted?.();
-                  } catch (e) {
-                    setError(String(e));
-                  } finally {
-                    setDrafting(null);
-                  }
-                })()
-              }
-              className="rounded bg-blue-600 px-2 py-1 text-xs text-white disabled:opacity-40"
-            >
-              {drafting === t.slug ? "生成中…" : "直近の受信に返信を作る"}
-            </button>
-            <p className="mt-1 text-[10px] text-neutral-400">
-              返信タブに入ります。送信するかどうかは、そこで見てから決められます。
-            </p>
           </div>
 
           {/* 自動送信は最後に置く。ここを入れると確認なしに本物が飛ぶ。 */}

@@ -105,9 +105,7 @@ export default function App() {
           テキストエリアの flex-1 が効かない。 */}
       <main className="min-h-0 flex-1 overflow-hidden">
         {tab === "replies" && <Replies />}
-        {/* 返信案を作ったら返信タブへ送る。作ったものが見えない場所に
-            溜まると、確認待ちがあることに気づけない。 */}
-        {tab === "targets" && <Targets onDrafted={() => setTab("replies")} />}
+        {tab === "targets" && <Targets />}
         {tab === "self" && <SelfProfile />}
 
         {tab === "settings" && (

@@ -2609,6 +2609,7 @@ dependencies = [
  "clap",
  "momreply-core",
  "rusqlite",
+ "serde_json",
  "tokio",
 ]
 

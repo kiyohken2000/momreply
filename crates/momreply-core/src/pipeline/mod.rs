@@ -7,7 +7,9 @@ pub mod guards;
 pub mod prompt;
 pub mod run;
 
-pub use generate::{conversation, draft_reply, Conversation, Draft, LengthPreset, Redo, Urgency};
+pub use generate::{
+    build_context, conversation, draft_reply, Conversation, Draft, LengthPreset, Redo, Urgency,
+};
 pub use guards::{evaluate, HoldReason, Limits, Verdict};
 pub use prompt::{Context, Retry};
 pub use run::{process, Options, Outcome};

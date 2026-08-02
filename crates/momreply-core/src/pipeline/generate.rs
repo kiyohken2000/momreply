@@ -140,6 +140,69 @@ pub fn conversation(
     Ok(Conversation { burst, recent })
 }
 
+/// LLM に渡す材料を組み立てる。
+///
+/// **`draft_reply` と同じものを返す。** 中身を見たいときにここを呼べば、
+/// 実際に送られているものが分かる（`momreply-cli prompt`）。別に組み立てると、
+/// 見ているものと送っているものがずれて、確かめた意味が無くなる。
+pub fn build_context(
+    chat_db: &Connection,
+    store: &Store,
+    target: &Target,
+    message: &imessage::Message,
+    preset: LengthPreset,
+    redo: Option<&Redo<'_>>,
+) -> Result<prompt::Context> {
+    let incoming = message
+        .body
+        .clone()
+        .context("本文が無いメッセージは生成対象にならない")?;
+
+    let convo = conversation(chat_db, &target.handles, message)?;
+    let incoming = if convo.burst.len() > 1 {
+        imessage::burst_text(&convo.burst)
+    } else {
+        incoming
+    };
+
+    // 質問は「質問が来ている」と伝えるためだけに取り出す。
+    // 答えさせないので、答えられるかどうかの判定はしない。
+    let found = questions::extract(&incoming);
+
+    // 再生成なら前回の結果を引く。無ければ通常生成に落とす。
+    let retry = match redo {
+        Some(r) => store
+            .previous_draft(message.rowid)?
+            .map(|previous| prompt::Retry {
+                previous,
+                instruction: r.instruction.map(str::to_string),
+            }),
+        None => None,
+    };
+
+    Ok(prompt::Context {
+        display_name: target.display_name.clone(),
+        user_name: store
+            .get_kv("user_name")?
+            .unwrap_or_else(|| "自分".to_string()),
+        self_profile: profile::read_self()?,
+        target_profile: profile::read_target(&target.slug, &target.display_name)?,
+        fewshot: store.fewshot(target.id)?,
+        recent: convo
+            .recent
+            .iter()
+            .filter_map(|m| m.body.clone().map(|b| (m.is_from_me, b)))
+            .collect(),
+        incoming,
+        questions: found,
+        now: chrono::Local::now()
+            .format("%Y年%-m月%-d日(%a) %H:%M")
+            .to_string(),
+        length_instruction: preset.instruction(),
+        retry,
+    })
+}
+
 pub struct Draft {
     pub chat_rowid: i64,
     pub incoming: String,
@@ -211,53 +274,14 @@ pub async fn draft_reply(
         });
     }
 
-    let convo = conversation(chat_db, &target.handles, message)?;
-    let incoming = if convo.burst.len() > 1 {
-        imessage::burst_text(&convo.burst)
-    } else {
-        incoming
-    };
-
-    // 質問は「質問が来ている」と伝えるためだけに取り出す。
-    // 答えさせないので、答えられるかどうかの判定はしない。
-    let found = questions::extract(&incoming);
-
     let provider = primary_provider(store)?;
     let model = store
         .get_kv(&provider.model_setting_key())?
         .filter(|m| !m.trim().is_empty())
         .unwrap_or_else(|| provider.default_model().to_string());
 
-
-    // 再生成なら前回の結果を引く。無ければ通常生成に落とす。
-    let retry = match &redo {
-        Some(r) => store.previous_draft(message.rowid)?.map(|previous| prompt::Retry {
-            previous,
-            instruction: r.instruction.map(str::to_string),
-        }),
-        None => None,
-    };
-    let kind = if retry.is_some() { "regenerate" } else { "initial" };
-
-    let ctx = prompt::Context {
-        display_name: target.display_name.clone(),
-        user_name: store
-            .get_kv("user_name")?
-            .unwrap_or_else(|| "自分".to_string()),
-        self_profile: profile::read_self()?,
-        target_profile: profile::read_target(&target.slug, &target.display_name)?,
-        fewshot: store.fewshot(target.id)?,
-        recent: convo
-            .recent
-            .iter()
-            .filter_map(|m| m.body.clone().map(|b| (m.is_from_me, b)))
-            .collect(),
-        incoming: incoming.clone(),
-        questions: found,
-        now: chrono::Local::now().format("%Y年%-m月%-d日(%a) %H:%M").to_string(),
-        length_instruction: preset.instruction(),
-        retry,
-    };
+    let ctx = build_context(chat_db, store, target, message, preset, redo.as_ref())?;
+    let kind = if ctx.retry.is_some() { "regenerate" } else { "initial" };
 
     let llm = llm::build(provider, Some(model.clone())).map_err(anyhow::Error::from)?;
     let response = call_with_retry(
@@ -321,7 +345,8 @@ pub async fn draft_reply(
 
     Ok(Draft {
         chat_rowid: message.rowid,
-        incoming,
+        // 連投をまとめたなら、まとめた全文。処理履歴にはこちらが残る。
+        incoming: ctx.incoming.clone(),
         text,
         provider: provider.id().to_string(),
         model,

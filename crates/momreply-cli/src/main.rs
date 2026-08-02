@@ -46,6 +46,19 @@ enum Command {
     /// 返信対象の相手を管理する。
     #[command(subcommand)]
     Target(TargetCmd),
+    /// LLM に実際に渡しているものを見る。**呼び出しはしない。**
+    ///
+    /// --json を付けると、別の実装（Apple Intelligence など）へ
+    /// そのまま流し込める形で出す。
+    Prompt {
+        #[arg(long)]
+        slug: String,
+        /// 対象の ROWID。省略すると直近の受信。
+        #[arg(long)]
+        rowid: Option<i64>,
+        #[arg(long)]
+        json: bool,
+    },
     /// 連投がどこまで 1 通としてまとめられるかを見る。
     ///
     /// 生成も送信もしない。まとめ方の確認だけに使う。
@@ -203,6 +216,7 @@ async fn main() -> Result<()> {
         } => cmd_messages(&chat_db, &handle, limit, include_skipped),
         Command::Target(cmd) => cmd_target(&chat_db, cmd),
         Command::Burst { slug, rowid } => cmd_burst(&chat_db, &slug, rowid),
+        Command::Prompt { slug, rowid, json } => cmd_prompt(&chat_db, &slug, rowid, json),
         Command::Watch { slug, live, once } => {
             cmd_watch(&chat_db, &chat_db_path, &slug, live, once).await
         }
@@ -657,6 +671,67 @@ async fn cmd_generate(
         Some(&draft.provider),
         Some(&draft.model),
     )?;
+    Ok(())
+}
+
+/// 実際に渡しているプロンプトを出す。LLM を呼ばない。
+///
+/// 組み立ては `pipeline::build_context` に一本化してある。ここで別に
+/// 組み立てると、見ているものと送っているものがずれる。
+fn cmd_prompt(
+    chat_db: &rusqlite::Connection,
+    slug: &str,
+    rowid: Option<i64>,
+    json: bool,
+) -> Result<()> {
+    let store = Store::open_default()?;
+    let target = store
+        .target_by_slug(slug)?
+        .with_context(|| format!("'{slug}' は登録されていない"))?;
+
+    let recent = imessage::recent_messages(chat_db, &target.handles, 100)?;
+    let message = match rowid {
+        Some(id) => recent
+            .into_iter()
+            .find(|m| m.rowid == id)
+            .with_context(|| format!("ROWID {id} が直近 100 件に無い"))?,
+        None => recent
+            .into_iter()
+            .filter(|m| !m.is_from_me && m.skip.is_none())
+            .next_back()
+            .context("受信メッセージが見つからない")?,
+    };
+
+    let preset = LengthPreset::parse(&target.reply_preset)
+        .with_context(|| format!("不明な長さ指定: {}", target.reply_preset))?;
+    let ctx = pipeline::build_context(chat_db, &store, &target, &message, preset, None)?;
+    let system = pipeline::prompt::system(&ctx);
+    let messages = pipeline::prompt::messages(&ctx);
+
+    if json {
+        let turns: Vec<serde_json::Value> = messages
+            .iter()
+            .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "target": target.display_name,
+                "chat_rowid": message.rowid,
+                "system": system,
+                "messages": turns,
+            }))?
+        );
+        return Ok(());
+    }
+
+    println!("=== system ({} 文字) ===", system.chars().count());
+    println!("{system}");
+    println!();
+    println!("=== messages ({} 通) ===", messages.len());
+    for m in &messages {
+        println!("[{}] {}", m.role, m.content);
+    }
     Ok(())
 }
 

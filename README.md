@@ -1,5 +1,7 @@
 # MomReply
 
+[English](README.en.md)
+
 特定の相手から届く iMessage に、AI が返信文を生成する macOS 常駐アプリ。
 
 生成した返信は、確認したうえで送るか、条件を満たせば自動で送る。
@@ -112,19 +114,6 @@ open /Applications/MomReply.app
 > Developer ID 証明書と公証の資格情報があれば、公証と staple まで行う。
 > 無くても手元で使うぶんには困らない。
 
-### 配布する（開発者向け）
-
-```sh
-./scripts/build.sh          # 署名・公証・更新用の署名
-./scripts/release.sh v0.1.0 # GitHub Releases へ
-```
-
-`release.sh` は `latest.json` をビルド結果から組み立てる。
-自動更新はこれを見る。手で書くと署名を入れ間違えて、更新が黙って拒否される。
-
-**更新用の署名鍵（`~/.tauri/momreply.key`）はリポジトリに入れない。**
-これで署名されたものしか更新として適用されないが、失うと以後どの版も配れなくなる。
-
 ### 2. フルディスクアクセスを許可する
 
 初回起動時に案内が出る。ボタンからシステム設定を開いて `MomReply` を追加し、
@@ -177,6 +166,19 @@ open /Applications/MomReply.app
 ./scripts/cli.sh target list
 ./scripts/cli.sh target set --slug someone --preset chars:250
 ```
+
+### 配布する（開発者向け）
+
+```sh
+./scripts/build.sh          # 署名・公証・更新用の署名
+./scripts/release.sh v0.1.0 # GitHub Releases へ
+```
+
+`release.sh` は `latest.json` をビルド結果から組み立てる。
+自動更新はこれを見る。手で書くと署名を入れ間違えて、更新が黙って拒否される。
+
+**更新用の署名鍵（`~/.tauri/momreply.key`）はリポジトリに入れない。**
+これで署名されたものしか更新として適用されないが、失うと以後どの版も配れなくなる。
 
 ---
 
@@ -279,8 +281,7 @@ chat.db へのアクセスは `momreply-core::imessage` に一本化してある
 
 - Apple Intelligence（オンデバイス生成）
 - モデル単価の登録（金額上限が効かない原因）
-- 相手の表示名の変更 UI
-- 通知をタップしてポップオーバーを開く
+- 通知をタップしてポップオーバーを開く（プラグイン側に API が無い）
 - Intel Mac 対応（ユニバーサルバイナリ）
 
 詳細な仕様と受け入れ基準は `docs/momreply-spec.md`。

@@ -24,6 +24,14 @@ If you would rather read the code before installing it, see
 [Building from source](#building-from-source). This tool reads your entire
 message history and sends parts of it to an LLM, so that path is kept open.
 
+## Screens
+
+| Per-contact settings | Model and keys | About you |
+|---|---|---|
+| ![Contacts tab](docs/images/contacts.jpg) | ![Settings tab](docs/images/settings.jpg) | ![About-you tab](docs/images/self.jpg) |
+
+Everything lives in one popover from the menu bar. Nothing appears in the Dock.
+
 ---
 
 ## What problem is this for

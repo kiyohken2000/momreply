@@ -320,7 +320,10 @@ const DICT = {
     ja: "検証済みのキーが 1 つも無い間は、自動送信を有効にできません。",
     en: "Auto-send cannot be enabled until at least one key is verified.",
   },
-  "settings.appleUnimplemented": { ja: "未実装", en: "Not implemented" },
+  "settings.appleUnimplemented": {
+    ja: "見送り（安全機構に拒否されるため）",
+    en: "Not used (its safety system refuses these prompts)",
+  },
   "settings.noKeyNeeded": { ja: "キー不要", en: "No key needed" },
   "settings.version": { ja: "バージョン", en: "Version" },
   "settings.checkUpdate": { ja: "更新を確認", en: "Check for updates" },

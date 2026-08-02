@@ -239,6 +239,35 @@ only thing holding it back.
 
 ---
 
+## Why Apple Intelligence is not used
+
+On-device generation (`FoundationModels`) is available on macOS 26. It is free,
+offline, needs no key, and is fast (1–6s against 40–50s for gpt-5). The sidecar
+is written (`sidecar/momreply-fm/`).
+
+It is still not wired up. **The real production prompt was refused 10 times out
+of 10 by the model's safety system.**
+
+| Prompt | Result |
+|---|---|
+| As built in production | Refused (10/10) |
+| With the conversation history removed | Works |
+| No instructions, no style examples | Works |
+
+The trigger was the conversation history. Even when the incoming message is
+mild, a charged phrase anywhere in the history is enough. This app always
+includes history, so in practice it is always refused.
+
+Removing the history makes it work, but the output was not usable either: it
+invented events that were written nowhere, and copied instruction text straight
+into the reply.
+
+Shipping it as a selectable option would mean whoever picks it just sees replies
+stop arriving — the least legible way for something to break. The sidecar is
+kept because a future model may change the answer.
+
+---
+
 ## Data it touches
 
 | Location | Contents |
@@ -296,7 +325,7 @@ function that opens it, and it cannot open anything but read-only.
 - [x] **Phase 0** Reading chat.db (read-only connection, `attributedBody` decoding, exclusion rules)
 - [ ] **Phase 1** Generation + dry run
   - [x] Contact registration and backlog protection
-  - [x] LLM providers (Claude / Gemini / OpenAI) — Apple Intelligence not started
+  - [x] LLM providers (Claude / Gemini / OpenAI) — Apple Intelligence evaluated and rejected (see below)
   - [x] Style-example extraction
   - [x] Reply generation
 - [x] **Phase 2** Sending + menu-bar UI
@@ -305,7 +334,6 @@ function that opens it, and it cannot open anything but read-only.
 
 Not started or unfinished:
 
-- Apple Intelligence (on-device generation)
 - Model prices (the reason the spending limit does nothing)
 - Opening the popover by tapping a notification (the plugin has no desktop API for it)
 - Intel Mac support (universal binary)

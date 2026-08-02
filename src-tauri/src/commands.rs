@@ -221,11 +221,22 @@ pub fn list_pending() -> Result<Vec<PendingView>, String> {
     Ok(out)
 }
 
-/// 生成が読んだ会話の 1 行。
+/// 会話の 1 行。
 #[derive(Serialize)]
 pub struct Turn {
     from_me: bool,
     body: String,
+    at: i64,
+}
+
+impl Turn {
+    fn of(m: &momreply_core::imessage::Message) -> Self {
+        Turn {
+            from_me: m.is_from_me,
+            body: m.body.clone().unwrap_or_default(),
+            at: m.date.timestamp(),
+        }
+    }
 }
 
 /// 返信案を作るときに読んだ、対象より前の会話。
@@ -263,11 +274,30 @@ pub fn conversation(chat_rowid: i64) -> Result<Vec<Turn>, String> {
     let convo = momreply_core::pipeline::conversation(&chat_db, &target.handles, &message)
         .map_err(|e| e.to_string())?;
 
-    Ok(convo
-        .recent
-        .into_iter()
-        .map(|(from_me, body)| Turn { from_me, body })
-        .collect())
+    Ok(convo.recent.iter().map(Turn::of).collect())
+}
+
+/// 相手との直近のやり取り。**確認待ちが無いときに何が起きたかを見るため。**
+///
+/// 自動送信が有効だと、うまく回っているほど確認待ちは空になる。
+/// そのとき画面に何も出ないと、動いているのか止まっているのか分からない。
+#[tauri::command]
+pub fn recent_conversation(slug: String, limit: u32) -> Result<Vec<Turn>, String> {
+    let store = Store::open_default().map_err(|e| e.to_string())?;
+    let target = store
+        .target_by_slug(&slug)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("'{slug}' は登録されていません"))?;
+
+    let chat_db = open_chat_db()?;
+    Ok(
+        momreply_core::imessage::recent_messages(&chat_db, &target.handles, limit)
+            .map_err(|e| e.to_string())?
+            .iter()
+            .filter(|m| m.skip.is_none() && m.body.is_some())
+            .map(Turn::of)
+            .collect(),
+    )
 }
 
 /// 人が確認して送る。**送信直前の既返信チェックは core 側で行う。**

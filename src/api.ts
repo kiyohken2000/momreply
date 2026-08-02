@@ -61,8 +61,8 @@ export function listPending(): Promise<Pending[]> {
   return invoke("list_pending");
 }
 
-/** 生成が読んだ、対象より前の会話（古い順）。 */
-export type Turn = { from_me: boolean; body: string };
+/** 会話の 1 行（古い順に並ぶ）。 */
+export type Turn = { from_me: boolean; body: string; at: number };
 
 /**
  * 返信案を作るときに読んだ会話。
@@ -70,6 +70,14 @@ export type Turn = { from_me: boolean; body: string };
  */
 export function conversation(chatRowid: number): Promise<Turn[]> {
   return invoke("conversation", { chatRowid });
+}
+
+/**
+ * 相手との直近のやり取り。確認待ちが無いときに、何が起きたかを見るため。
+ * 自動送信された返信もここに現れる。
+ */
+export function recentConversation(slug: string, limit = 12): Promise<Turn[]> {
+  return invoke("recent_conversation", { slug, limit });
 }
 
 /** 送信直前の既返信チェックはバックエンドで行われる。 */

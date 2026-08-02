@@ -4,6 +4,7 @@ import {
   draftLatest,
   listPending,
   listTargets,
+  recentConversation,
   regenerate,
   sendReply,
   skipPending,
@@ -267,9 +268,16 @@ function Spinner({ light = false }: { light?: boolean }) {
 /**
  * 確認待ちが 1 件も無いときの画面。
  *
- * ここに「返信を作る」を置く理由。相手が最後に送ってきたまま止まって
- * いても、監視は登録より前のメッセージを拾わない（仕様書 6.1 の
- * バックログ保護）。その状態で相手タブを探させるのは遠すぎる。
+ * # なぜ会話を出すか
+ *
+ * 自動送信が有効だと、**うまく回っているほどここは空になる**。
+ * 「確認待ちの返信はありません」だけだと、動いているのか止まって
+ * いるのか区別がつかない。直近のやり取りを出せば、自動で送った返信も
+ * そこに現れるので、状態がひと目で分かる。
+ *
+ * ここに「返信を作る」も置く。相手が最後に送ってきたまま止まっていても、
+ * 監視は登録より前のメッセージを拾わない（仕様書 6.1 のバックログ保護）。
+ * その状態で相手タブを探させるのは遠すぎる。
  *
  * 作った案は**必ず確認待ちに入る**。押しただけでは送信されない。
  */
@@ -301,7 +309,7 @@ function Empty({ onDrafted }: { onDrafted: () => Promise<void> }) {
   }
 
   return (
-    <div className="px-4 py-6">
+    <div className="h-full overflow-y-auto px-4 py-4">
       <p className="text-center text-xs text-neutral-400">確認待ちの返信はありません。</p>
 
       {targets !== null && targets.length === 0 && (
@@ -311,31 +319,80 @@ function Empty({ onDrafted }: { onDrafted: () => Promise<void> }) {
       )}
 
       {targets?.map((t) => (
-        <div key={t.slug} className="mt-3 text-center">
+        <div key={t.slug} className="mt-4">
+          <div className="text-[11px] font-medium text-neutral-500 dark:text-neutral-400">
+            {t.display_name}
+          </div>
+          <Recent slug={t.slug} />
           <button
             type="button"
             disabled={drafting !== null}
             onClick={() => void make(t.slug)}
-            className="rounded bg-blue-600 px-3 py-1.5 text-xs text-white disabled:opacity-40"
+            className="mt-2 w-full rounded bg-blue-600 px-3 py-1.5 text-xs text-white disabled:opacity-40"
           >
-            {drafting === t.slug
-              ? "生成中…"
-              : `${t.display_name} の直近の受信に返信を作る`}
+            {drafting === t.slug ? "生成中…" : "直近の受信に返信を作る"}
           </button>
         </div>
       ))}
 
-      {targets !== null && targets.length > 0 && (
-        <p className="mt-2 text-center text-[11px] text-neutral-400">
-          作った案はここに入ります。送るかどうかは、見てから決められます。
-        </p>
-      )}
       {drafting !== null && (
         <p className="mt-2 text-center text-[11px] text-neutral-400">
           数十秒かかることがあります。
         </p>
       )}
       {error && <p className="mt-3 text-xs break-words text-red-600">{error}</p>}
+    </div>
+  );
+}
+
+/** 相手との直近のやり取り。自動で送った返信もここに出る。 */
+function Recent({ slug }: { slug: string }) {
+  const [turns, setTurns] = useState<Turn[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    recentConversation(slug)
+      .then(setTurns)
+      .catch((e) => {
+        setError(String(e));
+        setTurns([]);
+      });
+  }, [slug]);
+
+  if (error) {
+    return <p className="mt-1 text-[11px] break-words text-red-600">{error}</p>;
+  }
+  if (turns === null) {
+    return <p className="mt-1 text-[11px] text-neutral-400">読み込み中…</p>;
+  }
+  if (turns.length === 0) {
+    return <p className="mt-1 text-[11px] text-neutral-400">やり取りがありません。</p>;
+  }
+
+  return (
+    <div className="mt-1 rounded border border-neutral-200 p-2 dark:border-neutral-700">
+      {turns.map((t, i) => (
+        <div key={i} className="mb-1.5 last:mb-0">
+          <div className="text-[10px] text-neutral-400">
+            {t.from_me ? "自分" : "相手"}
+            {" ・ "}
+            {new Date(t.at * 1000).toLocaleString("ja-JP", {
+              month: "numeric",
+              day: "numeric",
+              hour: "2-digit",
+              minute: "2-digit",
+            })}
+          </div>
+          <div
+            className={
+              "text-[11px] whitespace-pre-wrap " +
+              (t.from_me ? "text-blue-700 dark:text-blue-300" : "")
+            }
+          >
+            {t.body}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }

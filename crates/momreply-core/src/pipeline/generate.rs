@@ -111,8 +111,8 @@ impl LengthPreset {
 pub struct Conversation {
     /// 返信の対象。連投ならまとめた分すべて（古い順）。
     pub burst: Vec<imessage::Message>,
-    /// その前の会話（古い順）。`(自分か, 本文)`。
-    pub recent: Vec<(bool, String)>,
+    /// その前の会話（古い順）。本文のあるものだけ。
+    pub recent: Vec<imessage::Message>,
 }
 
 /// 「直近の会話」として渡す件数。
@@ -134,8 +134,7 @@ pub fn conversation(
     let in_burst: Vec<i64> = burst.iter().map(|m| m.rowid).collect();
     let recent = imessage::recent_messages(chat_db, handles, RECENT_TURNS)?
         .into_iter()
-        .filter(|m| m.skip.is_none() && !in_burst.contains(&m.rowid))
-        .filter_map(|m| m.body.map(|b| (m.is_from_me, b)))
+        .filter(|m| m.skip.is_none() && m.body.is_some() && !in_burst.contains(&m.rowid))
         .collect();
 
     Ok(Conversation { burst, recent })
@@ -248,7 +247,11 @@ pub async fn draft_reply(
         self_profile: profile::read_self()?,
         target_profile: profile::read_target(&target.slug, &target.display_name)?,
         fewshot: store.fewshot(target.id)?,
-        recent: convo.recent,
+        recent: convo
+            .recent
+            .iter()
+            .filter_map(|m| m.body.clone().map(|b| (m.is_from_me, b)))
+            .collect(),
         incoming: incoming.clone(),
         questions: found,
         now: chrono::Local::now().format("%Y年%-m月%-d日(%a) %H:%M").to_string(),

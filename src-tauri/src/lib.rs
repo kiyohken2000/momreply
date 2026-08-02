@@ -37,6 +37,7 @@ pub fn run() {
             commands::reject_fact,
             commands::list_pending,
             commands::conversation,
+            commands::recent_conversation,
             commands::send_reply,
             commands::regenerate,
             commands::skip_pending,

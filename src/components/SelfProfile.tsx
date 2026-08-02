@@ -7,6 +7,7 @@ import {
   setSelfProfile,
   type FactCandidate,
 } from "../api";
+import { useLang } from "../lang";
 
 /**
  * `self.md` の編集と、追記候補の承認。
@@ -18,6 +19,7 @@ import {
  * 汚染されるため、根拠のやり取りを必ず並べて人が判断できるようにしている。
  */
 export default function SelfProfile() {
+  const { t } = useLang();
   const [text, setText] = useState<string | null>(null);
   const [saved, setSaved] = useState<string>("");
   const [candidates, setCandidates] = useState<FactCandidate[]>([]);
@@ -34,7 +36,7 @@ export default function SelfProfile() {
       setSaved(content);
       setError(null);
     } catch (e) {
-      setError(`self.md を読めません: ${e}`);
+      setError(t("self.readError", { reason: String(e) }));
       // 読めなくても編集はできるようにしておく。
       setText("");
       setSaved("");
@@ -92,17 +94,18 @@ export default function SelfProfile() {
   return (
     <section className="flex h-full flex-col">
       <h2 className="shrink-0 px-4 pt-4 pb-2 text-xs font-semibold tracking-wide text-neutral-500 uppercase dark:text-neutral-400">
-        自分について
+        {t("self.title")}
       </h2>
       <p className="shrink-0 px-4 pb-2 text-xs text-neutral-500 dark:text-neutral-400">
-        文章の方向性を指示できます（例:「デスマス調にしない」「絵文字を使わない」）。
-        指示は文体の手本より優先されます。事実を書けば、それだけは言い切ります。
+        {t("self.lead")}
       </p>
 
-      {error && <p className="px-4 pb-2 text-xs break-words text-red-600">{error}</p>}
+      {error && (
+        <p className="px-4 pb-2 text-xs break-words text-red-600">{error}</p>
+      )}
       {candidateError && (
         <p className="px-4 pb-2 text-xs break-words text-amber-600">
-          追記候補を読めません: {candidateError}
+          {t("self.candidateError", { reason: candidateError })}
         </p>
       )}
 
@@ -111,7 +114,7 @@ export default function SelfProfile() {
       {candidates.length > 0 && (
         <div className="mx-4 mb-3 max-h-56 shrink-0 overflow-y-auto rounded border border-amber-300 bg-amber-50 p-2 dark:border-amber-700 dark:bg-amber-950/40">
           <p className="mb-2 text-xs font-medium">
-            追記候補 {candidates.length} 件（承認するまで反映されません）
+            {t("self.candidates", { n: candidates.length })}
           </p>
           {candidates.map((c) => (
             <div
@@ -132,7 +135,7 @@ export default function SelfProfile() {
                   onClick={() => void decide(c.id, true)}
                   className="rounded bg-blue-600 px-2 py-0.5 text-[11px] text-white disabled:opacity-40"
                 >
-                  承認
+                  {t("self.approve")}
                 </button>
                 <button
                   type="button"
@@ -140,7 +143,7 @@ export default function SelfProfile() {
                   onClick={() => void decide(c.id, false)}
                   className="rounded border border-neutral-300 px-2 py-0.5 text-[11px] disabled:opacity-40 dark:border-neutral-600"
                 >
-                  却下
+                  {t("self.reject")}
                 </button>
               </div>
             </div>
@@ -155,11 +158,7 @@ export default function SelfProfile() {
           value={text ?? ""}
           onChange={(e) => setText(e.target.value)}
           disabled={loading || busy}
-          placeholder={
-            loading
-              ? "読み込み中…"
-              : "- デスマス調にしない\n- 絵文字は使わない\n- 長く書きすぎない"
-          }
+          placeholder={loading ? t("common.loading") : t("self.placeholder")}
           spellCheck={false}
           className="min-h-32 w-full flex-1 resize-none rounded border border-neutral-300 p-2 font-mono text-xs leading-relaxed disabled:opacity-50 dark:border-neutral-600 dark:bg-neutral-800"
         />
@@ -172,17 +171,22 @@ export default function SelfProfile() {
             disabled={loading || busy}
             className="rounded bg-blue-600 px-3 py-1 text-xs text-white disabled:opacity-40"
           >
-            {busy ? "保存中…" : "保存"}
+            {busy ? t("common.saving") : t("common.save")}
           </button>
           {dirty ? (
-            <span className="text-xs text-amber-600">未保存の変更があります</span>
+            <span className="text-xs text-amber-600">
+              {t("common.unsaved")}
+            </span>
           ) : (
-            !loading && <span className="text-xs text-neutral-400">保存済み</span>
+            !loading && (
+              <span className="text-xs text-neutral-400">
+                {t("common.saved")}
+              </span>
+            )
           )}
         </div>
         <p className="mt-2 shrink-0 text-[11px] text-neutral-400">
-          この内容は返信生成のたびに LLM へ送られます。外部に出て困ることは
-          書かないでください。
+          {t("self.sentToLlm")}
         </p>
       </div>
     </section>

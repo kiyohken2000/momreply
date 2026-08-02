@@ -29,10 +29,13 @@ pub enum Phase {
 }
 
 impl Phase {
-    pub fn label(self) -> &'static str {
+    pub fn label(self, lang: crate::lang::Lang) -> &'static str {
         match self {
-            Phase::Settling => "続きが来ないか待っています",
-            Phase::Generating => "返信を作っています",
+            Phase::Settling => lang.pick(
+                "続きが来ないか待っています",
+                "Waiting in case more arrives",
+            ),
+            Phase::Generating => lang.pick("返信を作っています", "Writing a reply"),
         }
     }
 }
@@ -56,11 +59,12 @@ fn icon_for(activity: Option<&Activity>) -> &'static [u8] {
     }
 }
 
+/// 文言は載せない。画面側は `phase` から自前で訳す。
+/// 言語を切り替えたときに、出ている帯だけ古い言語で残るのを避ける。
 #[derive(Debug, Clone, Serialize)]
 pub struct Activity {
     pub who: String,
     pub phase: Phase,
-    pub label: &'static str,
 }
 
 fn cell() -> &'static Mutex<Option<Activity>> {
@@ -74,7 +78,6 @@ pub fn set(app: &AppHandle, who: &str, phase: Phase) {
     let next = Activity {
         who: who.to_string(),
         phase,
-        label: phase.label(),
     };
     {
         let mut slot = cell().lock().unwrap_or_else(|e| e.into_inner());
@@ -120,7 +123,11 @@ fn announce(app: &AppHandle, activity: Option<&Activity>) {
     };
 
     let tooltip = match activity {
-        Some(a) => format!("MomReply — {}（{}）", a.label, a.who),
+        Some(a) => {
+            let lang = crate::lang::current();
+            let sep = lang.pick("／", " · ");
+            format!("MomReply — {}{sep}{}", a.phase.label(lang), a.who)
+        }
         None => "MomReply".to_string(),
     };
     let _ = tray.set_tooltip(Some(&tooltip));

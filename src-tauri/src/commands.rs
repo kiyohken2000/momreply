@@ -195,6 +195,26 @@ pub struct PendingView {
     reason: Option<String>,
 }
 
+/// 保存された表示言語。未設定なら空文字を返し、画面側が OS の設定から決める。
+#[tauri::command]
+pub fn get_ui_language() -> Result<String, String> {
+    let store = Store::open_default().map_err(|e| e.to_string())?;
+    Ok(store
+        .get_kv(crate::lang::KEY)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default())
+}
+
+/// 表示言語を保存する。**Rust 側の通知とツールチップも同じ値を読む。**
+#[tauri::command]
+pub fn set_ui_language(lang: String) -> Result<(), String> {
+    let lang = crate::lang::Lang::parse(&lang);
+    let store = Store::open_default().map_err(|e| e.to_string())?;
+    store
+        .set_kv(crate::lang::KEY, lang.id())
+        .map_err(|e| e.to_string())
+}
+
 /// chat.db を読めるか。**フルディスクアクセスの有無がここに出る。**
 #[derive(Serialize)]
 pub struct ChatDbStatus {

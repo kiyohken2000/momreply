@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { openFullDiskAccessSettings, type ChatDbStatus } from "../api";
+import { useLang } from "../lang";
 
 /**
  * chat.db が読めないときの案内。
@@ -19,22 +20,25 @@ export default function NeedsAccess({
   status: ChatDbStatus;
   onRecheck: () => void;
 }) {
+  const { t } = useLang();
   const [opening, setOpening] = useState(false);
 
   if (!status.needs_full_disk_access) {
     return (
       <div className="h-full overflow-y-auto px-4 py-6">
-        <h2 className="text-sm font-semibold">メッセージを読めません</h2>
+        <h2 className="text-sm font-semibold">{t("access.cannotRead")}</h2>
         <p className="mt-2 text-xs text-neutral-500 dark:text-neutral-400">
           {status.reason}
         </p>
-        <p className="mt-2 text-[11px] break-all text-neutral-400">{status.path}</p>
+        <p className="mt-2 text-[11px] break-all text-neutral-400">
+          {status.path}
+        </p>
         <button
           type="button"
           onClick={onRecheck}
           className="mt-4 rounded border border-neutral-300 px-3 py-1 text-xs dark:border-neutral-600"
         >
-          もう一度確認する
+          {t("common.recheck")}
         </button>
       </div>
     );
@@ -42,24 +46,21 @@ export default function NeedsAccess({
 
   return (
     <div className="h-full overflow-y-auto px-4 py-6">
-      <h2 className="text-sm font-semibold">フルディスクアクセスが必要です</h2>
+      <h2 className="text-sm font-semibold">{t("access.title")}</h2>
       <p className="mt-2 text-xs leading-relaxed text-neutral-600 dark:text-neutral-300">
-        MomReply は macOS のメッセージ履歴を<strong>読み取り専用で</strong>参照します。
-        書き込みは一切しません。この許可が無いと、届いたメッセージを 1 件も
-        読めません。
+        {t("access.body")}
       </p>
 
       <ol className="mt-3 list-decimal space-y-1 pl-5 text-xs text-neutral-600 dark:text-neutral-300">
-        <li>下のボタンでシステム設定を開く</li>
-        <li>一覧に MomReply を追加して、スイッチを入れる</li>
+        <li>{t("access.step1")}</li>
+        <li>{t("access.step2")}</li>
         <li>
-          <strong>MomReply を終了して、開き直す</strong>
+          <strong>{t("access.step3")}</strong>
         </li>
       </ol>
 
       <p className="mt-2 text-[11px] text-amber-600">
-        許可したあとは必ず再起動してください。macOS は起動中のアプリに
-        権限を反映しません。
+        {t("access.restartWarning")}
       </p>
 
       <div className="mt-4 flex flex-wrap gap-2">
@@ -78,19 +79,19 @@ export default function NeedsAccess({
           }
           className="rounded bg-blue-600 px-3 py-1 text-xs text-white disabled:opacity-40"
         >
-          システム設定を開く
+          {t("access.openSettings")}
         </button>
         <button
           type="button"
           onClick={onRecheck}
           className="rounded border border-neutral-300 px-3 py-1 text-xs dark:border-neutral-600"
         >
-          もう一度確認する
+          {t("common.recheck")}
         </button>
       </div>
 
       <p className="mt-4 text-[11px] break-all text-neutral-400">
-        読み取り先: {status.path}
+        {t("access.readFrom")}: {status.path}
       </p>
     </div>
   );

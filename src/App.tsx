@@ -15,6 +15,8 @@ import {
   type RunMode,
 } from "./api";
 import ActivityBar from "./components/ActivityBar";
+import { useLang } from "./lang";
+import { LANGS } from "./i18n";
 import NeedsAccess from "./components/NeedsAccess";
 import ApiKeyRow from "./components/ApiKeyRow";
 import SelfProfile from "./components/SelfProfile";
@@ -27,14 +29,10 @@ import Targets from "./components/Targets";
  */
 type Tab = "replies" | "targets" | "self" | "settings";
 
-const TABS: { id: Tab; label: string }[] = [
-  { id: "replies", label: "返信" },
-  { id: "targets", label: "相手" },
-  { id: "self", label: "自分について" },
-  { id: "settings", label: "設定" },
-];
+const TABS = ["replies", "targets", "self", "settings"] as const;
 
 export default function App() {
+  const { t, lang, setLang } = useLang();
   const [tab, setTab] = useState<Tab>("replies");
   const [mode, setMode] = useState<RunMode | null>(null);
   const [statuses, setStatuses] = useState<KeyStatus[] | null>(null);
@@ -89,34 +87,34 @@ export default function App() {
     <div className="flex h-full flex-col text-sm">
       <header className="border-b border-neutral-200 dark:border-neutral-700">
         <div className="flex items-center justify-between px-4 pt-3">
-          <h1 className="font-semibold">MomReply</h1>
+          <h1 className="font-semibold">{t("app.name")}</h1>
           {/* キーが 1 つも無いことは、設定タブを開かなくても分かるようにする。 */}
           <div className="flex items-center gap-2 text-xs">
             {mode?.dry_run && (
-              <span className="text-amber-600">ドライラン</span>
+              <span className="text-amber-600">{t("badge.dryRun")}</span>
             )}
             {mode && !mode.dry_run && !mode.auto_send && (
-              <span className="text-neutral-400">自動送信OFF</span>
+              <span className="text-neutral-400">{t("badge.autoSendOff")}</span>
             )}
             {statuses !== null && !anyConfigured && (
-              <span className="text-amber-600">APIキー未設定</span>
+              <span className="text-amber-600">{t("badge.noKey")}</span>
             )}
           </div>
         </div>
         <nav className="mt-2 flex gap-1 px-2">
-          {TABS.map((t) => (
+          {TABS.map((id) => (
             <button
-              key={t.id}
+              key={id}
               type="button"
-              onClick={() => setTab(t.id)}
+              onClick={() => setTab(id)}
               className={
                 "rounded-t px-3 py-1.5 text-xs " +
-                (tab === t.id
+                (tab === id
                   ? "border-b-2 border-blue-600 font-medium"
                   : "text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-100")
               }
             >
-              {t.label}
+              {t(`tab.${id}`)}
             </button>
           ))}
         </nav>
@@ -141,7 +139,33 @@ export default function App() {
             {tab === "settings" && (
               <section className="h-full overflow-y-auto">
                 <h2 className="px-4 pt-4 pb-2 text-xs font-semibold tracking-wide text-neutral-500 uppercase dark:text-neutral-400">
-                  動作モード
+                  {t("settings.language")}
+                </h2>
+                <div className="border-b border-neutral-200 px-4 pb-3 dark:border-neutral-700">
+                  <div className="flex gap-1">
+                    {LANGS.map((l) => (
+                      <button
+                        key={l.id}
+                        type="button"
+                        onClick={() => setLang(l.id)}
+                        className={
+                          "rounded px-2 py-0.5 text-xs " +
+                          (lang === l.id
+                            ? "bg-blue-600 text-white"
+                            : "border border-neutral-300 dark:border-neutral-600")
+                        }
+                      >
+                        {l.label}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="mt-1 text-[11px] text-neutral-400">
+                    {t("settings.languageNote")}
+                  </p>
+                </div>
+
+                <h2 className="px-4 pt-4 pb-2 text-xs font-semibold tracking-wide text-neutral-500 uppercase dark:text-neutral-400">
+                  {t("settings.mode")}
                 </h2>
                 {mode && (
                   <div className="border-b border-neutral-200 px-4 pb-3 dark:border-neutral-700">
@@ -156,9 +180,7 @@ export default function App() {
                           void setRunMode(next.auto_send, next.dry_run);
                         }}
                       />
-                      <span className="text-xs">
-                        ドライラン（生成するが<strong>送信しない</strong>）
-                      </span>
+                      <span className="text-xs">{t("settings.dryRun")}</span>
                     </label>
                     <label className="mt-2 flex items-center gap-2">
                       <input
@@ -171,20 +193,22 @@ export default function App() {
                           void setRunMode(next.auto_send, next.dry_run);
                         }}
                       />
-                      <span className="text-xs">自動送信を許可する</span>
+                      <span className="text-xs">
+                        {t("settings.allowAutoSend")}
+                      </span>
                     </label>
                     <p className="mt-1 text-[11px] text-neutral-400">
                       {mode.dry_run
-                        ? "ドライラン中は自動送信されません。確認して手で送ることはできます。"
+                        ? t("settings.dryRunNote")
                         : !anyVerified
-                          ? "検証済みのキーが必要です。"
-                          : "相手ごとの設定でも自動送信を切れます。"}
+                          ? t("settings.needVerifiedKey")
+                          : t("settings.perTargetNote")}
                     </p>
                   </div>
                 )}
 
                 <h2 className="px-4 pt-4 pb-2 text-xs font-semibold tracking-wide text-neutral-500 uppercase dark:text-neutral-400">
-                  生成に使うAI
+                  {t("settings.provider")}
                 </h2>
                 <div className="border-b border-neutral-200 px-4 pb-3 dark:border-neutral-700">
                   {providers.map((p) => (
@@ -224,12 +248,12 @@ export default function App() {
                     </label>
                   ))}
                   <p className="mt-1 text-[11px] text-neutral-400">
-                    返信の生成とプロファイル抽出に使われます。
+                    {t("settings.providerNote")}
                   </p>
                 </div>
 
                 <h2 className="px-4 pt-4 pb-2 text-xs font-semibold tracking-wide text-neutral-500 uppercase dark:text-neutral-400">
-                  APIキー
+                  {t("settings.apiKeys")}
                 </h2>
 
                 {error && (
@@ -271,9 +295,13 @@ export default function App() {
                     <span className="text-sm font-medium">
                       Apple Intelligence
                     </span>
-                    <span className="text-xs text-neutral-400">キー不要</span>
+                    <span className="text-xs text-neutral-400">
+                      {t("settings.noKeyNeeded")}
+                    </span>
                   </div>
-                  <p className="mt-1 text-xs text-neutral-400">未実装</p>
+                  <p className="mt-1 text-xs text-neutral-400">
+                    {t("settings.appleUnimplemented")}
+                  </p>
                 </div>
 
                 {!anyVerified && (

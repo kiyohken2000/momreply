@@ -14,6 +14,7 @@ import {
   type TargetView,
   type Turn,
 } from "../api";
+import { useLang } from "../lang";
 
 /** 処理が進んだことを知らせる合図。Rust 側の `EVENT_UPDATED` と対。 */
 const UPDATED = "momreply://updated";
@@ -21,11 +22,11 @@ const UPDATED = "momreply://updated";
 /** 実行中の操作。何が起きているか分からない時間を作らないために持つ。 */
 type Busy = null | "regen" | "send" | "skip";
 
-const BUSY_LABEL: Record<Exclude<Busy, null>, string> = {
-  regen: "返信案を生成しています…",
-  send: "送信して結果を確認しています…",
-  skip: "処理しています…",
-};
+const BUSY_KEY = {
+  regen: "replies.busy.regen",
+  send: "replies.busy.send",
+  skip: "replies.busy.skip",
+} as const;
 
 /**
  * 確認待ちの返信（仕様書 6.6）。
@@ -37,6 +38,8 @@ const BUSY_LABEL: Record<Exclude<Busy, null>, string> = {
  * スクロールするのは受信内容と質問だけ。
  */
 export default function Replies() {
+  const { t, lang } = useLang();
+  const locale = lang === "ja" ? "ja-JP" : "en-US";
   const [items, setItems] = useState<Pending[] | null>(null);
   const [index, setIndex] = useState(0);
   const [draft, setDraft] = useState("");
@@ -119,7 +122,11 @@ export default function Replies() {
   }
 
   if (items === null) {
-    return <p className="px-4 py-4 text-xs text-neutral-400">読み込み中…</p>;
+    return (
+      <p className="px-4 py-4 text-xs text-neutral-400">
+        {t("common.loading")}
+      </p>
+    );
   }
 
   // 確認待ちが無いときこそ、返信を作りたい。相手タブまで探しに行かせない。
@@ -169,7 +176,7 @@ export default function Replies() {
           {current.incoming}
         </div>
         <div className="mt-1 text-[11px] text-neutral-400">
-          {new Date(current.received_at * 1000).toLocaleString("ja-JP")}
+          {new Date(current.received_at * 1000).toLocaleString(locale)}
           {current.reason && ` ・ ${current.reason}`}
         </div>
       </div>
@@ -182,7 +189,7 @@ export default function Replies() {
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             disabled={busy !== null}
-            placeholder="返信案"
+            placeholder={t("replies.draftPlaceholder")}
             onKeyDown={(e) => {
               if (e.key === "Enter" && e.metaKey && draft.trim()) {
                 e.preventDefault();
@@ -201,7 +208,7 @@ export default function Replies() {
             <div className="absolute inset-0 flex items-center justify-center rounded bg-white/75 dark:bg-neutral-900/75">
               <div className="flex items-center gap-2 text-xs text-neutral-600 dark:text-neutral-300">
                 <Spinner />
-                <span>{BUSY_LABEL[busy]}</span>
+                <span>{t(BUSY_KEY[busy])}</span>
               </div>
             </div>
           )}
@@ -210,17 +217,23 @@ export default function Replies() {
         <div className="mt-2 flex flex-wrap gap-1">
           {LENGTH_PRESETS.map((p) => (
             <button
-              key={p.id}
+              key={p}
               type="button"
               disabled={busy !== null}
               onClick={() =>
                 run("regen", async () => {
-                  setDraft(await regenerate(current.chat_rowid, instruction || null, p.id));
+                  setDraft(
+                    await regenerate(
+                      current.chat_rowid,
+                      instruction || null,
+                      p,
+                    ),
+                  );
                 })
               }
               className="rounded border border-neutral-300 px-2 py-0.5 text-[11px] disabled:opacity-40 dark:border-neutral-600"
             >
-              {p.label}
+              {t(`length.${p}`)}
             </button>
           ))}
         </div>
@@ -230,7 +243,7 @@ export default function Replies() {
           value={instruction}
           onChange={(e) => setInstruction(e.target.value)}
           disabled={busy !== null}
-          placeholder="AIへの指示（任意）"
+          placeholder={t("replies.instructionPlaceholder")}
           className="mt-2 w-full rounded border border-neutral-300 px-2 py-1 text-xs disabled:opacity-40 dark:border-neutral-600 dark:bg-neutral-800"
         />
 
@@ -240,12 +253,18 @@ export default function Replies() {
             disabled={busy !== null}
             onClick={() =>
               run("regen", async () => {
-                setDraft(await regenerate(current.chat_rowid, instruction || null, null));
+                setDraft(
+                  await regenerate(
+                    current.chat_rowid,
+                    instruction || null,
+                    null,
+                  ),
+                );
               })
             }
             className="rounded border border-neutral-300 px-2 py-1 text-xs disabled:opacity-40 dark:border-neutral-600"
           >
-            再生成
+            {t("replies.regenerate")}
           </button>
           <button
             type="button"
@@ -259,7 +278,7 @@ export default function Replies() {
             className="flex items-center gap-1 rounded bg-blue-600 px-3 py-1 text-xs text-white disabled:opacity-40"
           >
             {busy === "send" && <Spinner light />}
-            送信 ⌘↵
+            {t("replies.send")}
           </button>
           <button
             type="button"
@@ -272,17 +291,19 @@ export default function Replies() {
             }
             className="ml-auto text-xs text-neutral-500 disabled:opacity-40 dark:text-neutral-400"
           >
-            返さない
+            {t("replies.skip")}
           </button>
         </div>
 
         {generating && (
           <p className="mt-1 text-[11px] text-neutral-400">
-            数秒かかります。完了すると案が入れ替わります。
+            {t("replies.willReplace")}
           </p>
         )}
         {message && <p className="mt-1 text-xs text-green-600">{message}</p>}
-        {error && <p className="mt-1 text-xs break-words text-red-600">{error}</p>}
+        {error && (
+          <p className="mt-1 text-xs break-words text-red-600">{error}</p>
+        )}
       </div>
     </div>
   );
@@ -317,6 +338,7 @@ function Spinner({ light = false }: { light?: boolean }) {
  * 作った案は**必ず確認待ちに入る**。押しただけでは送信されない。
  */
 function Empty({ onDrafted }: { onDrafted: () => Promise<void> }) {
+  const { t } = useLang();
   const [targets, setTargets] = useState<TargetView[] | null>(null);
   const [drafting, setDrafting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -345,43 +367,51 @@ function Empty({ onDrafted }: { onDrafted: () => Promise<void> }) {
 
   return (
     <div className="h-full overflow-y-auto px-4 py-4">
-      <p className="text-center text-xs text-neutral-400">確認待ちの返信はありません。</p>
+      <p className="text-center text-xs text-neutral-400">
+        {t("replies.empty")}
+      </p>
 
       {targets !== null && targets.length === 0 && (
         <p className="mt-3 text-center text-xs text-neutral-400">
-          相手タブで返信する相手を登録してください。
+          {t("replies.noTargets")}
         </p>
       )}
 
-      {targets?.map((t) => (
-        <div key={t.slug} className="mt-4">
+      {targets?.map((x) => (
+        <div key={x.slug} className="mt-4">
           <div className="text-[11px] font-medium text-neutral-500 dark:text-neutral-400">
-            {t.display_name}
+            {x.display_name}
           </div>
-          <Recent slug={t.slug} />
+          <Recent slug={x.slug} />
           <button
             type="button"
             disabled={drafting !== null}
-            onClick={() => void make(t.slug)}
+            onClick={() => void make(x.slug)}
             className="mt-2 w-full rounded bg-blue-600 px-3 py-1.5 text-xs text-white disabled:opacity-40"
           >
-            {drafting === t.slug ? "生成中…" : "直近の受信に返信を作る"}
+            {drafting === x.slug
+              ? t("common.generating")
+              : t("replies.draftLatest")}
           </button>
         </div>
       ))}
 
       {drafting !== null && (
         <p className="mt-2 text-center text-[11px] text-neutral-400">
-          数十秒かかることがあります。
+          {t("replies.takesTime")}
         </p>
       )}
-      {error && <p className="mt-3 text-xs break-words text-red-600">{error}</p>}
+      {error && (
+        <p className="mt-3 text-xs break-words text-red-600">{error}</p>
+      )}
     </div>
   );
 }
 
 /** 相手との直近のやり取り。自動で送った返信もここに出る。 */
 function Recent({ slug }: { slug: string }) {
+  const { t, lang } = useLang();
+  const locale = lang === "ja" ? "ja-JP" : "en-US";
   const [turns, setTurns] = useState<Turn[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -410,20 +440,26 @@ function Recent({ slug }: { slug: string }) {
     return <p className="mt-1 text-[11px] break-words text-red-600">{error}</p>;
   }
   if (turns === null) {
-    return <p className="mt-1 text-[11px] text-neutral-400">読み込み中…</p>;
+    return (
+      <p className="mt-1 text-[11px] text-neutral-400">{t("common.loading")}</p>
+    );
   }
   if (turns.length === 0) {
-    return <p className="mt-1 text-[11px] text-neutral-400">やり取りがありません。</p>;
+    return (
+      <p className="mt-1 text-[11px] text-neutral-400">
+        {t("replies.noHistory")}
+      </p>
+    );
   }
 
   return (
     <div className="mt-1 rounded border border-neutral-200 p-2 dark:border-neutral-700">
-      {turns.map((t, i) => (
+      {turns.map((turn, i) => (
         <div key={i} className="mb-1.5 last:mb-0">
           <div className="text-[10px] text-neutral-400">
-            {t.from_me ? "自分" : "相手"}
+            {turn.from_me ? t("replies.me") : t("replies.them")}
             {" ・ "}
-            {new Date(t.at * 1000).toLocaleString("ja-JP", {
+            {new Date(turn.at * 1000).toLocaleString(locale, {
               month: "numeric",
               day: "numeric",
               hour: "2-digit",
@@ -433,10 +469,10 @@ function Recent({ slug }: { slug: string }) {
           <div
             className={
               "text-[11px] whitespace-pre-wrap " +
-              (t.from_me ? "text-blue-700 dark:text-blue-300" : "")
+              (turn.from_me ? "text-blue-700 dark:text-blue-300" : "")
             }
           >
-            {t.body}
+            {turn.body}
           </div>
         </div>
       ))}
@@ -456,6 +492,7 @@ function Recent({ slug }: { slug: string }) {
  * 開いたときに初めて読む。閉じたままなら chat.db を触らない。
  */
 function Context({ chatRowid }: { chatRowid: number }) {
+  const { t } = useLang();
   const [open, setOpen] = useState(false);
   const [turns, setTurns] = useState<Turn[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -485,31 +522,42 @@ function Context({ chatRowid }: { chatRowid: number }) {
         className="text-[11px] text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-100"
       >
         {open ? "▾ " : "▸ "}
-        生成が読んだ会話
-        {turns !== null && turns.length > 0 && `（${turns.length}件）`}
+        {t("replies.context")}
+        {turns !== null &&
+          turns.length > 0 &&
+          t("replies.contextCount", { n: turns.length })}
       </button>
 
       {open && (
         <div className="mt-1 rounded border border-neutral-200 p-2 dark:border-neutral-700">
-          {turns === null && <p className="text-[11px] text-neutral-400">読み込み中…</p>}
-          {turns?.length === 0 && !error && (
-            <p className="text-[11px] text-neutral-400">この前のやり取りはありません。</p>
+          {turns === null && (
+            <p className="text-[11px] text-neutral-400">
+              {t("common.loading")}
+            </p>
           )}
-          {turns?.map((t, i) => (
+          {turns?.length === 0 && !error && (
+            <p className="text-[11px] text-neutral-400">
+              {t("replies.contextNone")}
+            </p>
+          )}
+          {turns?.map((turn, i) => (
             <div key={i} className="mb-1 flex gap-1.5 text-[11px] last:mb-0">
               <span
                 className={
-                  "shrink-0 " + (t.from_me ? "text-blue-600" : "text-neutral-400")
+                  "shrink-0 " +
+                  (turn.from_me ? "text-blue-600" : "text-neutral-400")
                 }
               >
-                {t.from_me ? "自分" : "相手"}
+                {turn.from_me ? t("replies.me") : t("replies.them")}
               </span>
-              <span className="whitespace-pre-wrap">{t.body}</span>
+              <span className="whitespace-pre-wrap">{turn.body}</span>
             </div>
           ))}
-          {error && <p className="text-[11px] break-words text-red-600">{error}</p>}
+          {error && (
+            <p className="text-[11px] break-words text-red-600">{error}</p>
+          )}
           <p className="mt-2 text-[10px] text-neutral-400">
-            返信案を作るときに、これがそのまま LLM へ渡っています。
+            {t("replies.contextNote")}
           </p>
         </div>
       )}

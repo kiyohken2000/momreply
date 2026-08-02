@@ -6,6 +6,7 @@
 
 mod activity;
 mod commands;
+mod lang;
 mod notify;
 mod tray;
 mod watcher;
@@ -44,6 +45,8 @@ pub fn run() {
             commands::approve_fact,
             commands::reject_fact,
             commands::chat_db_status,
+            commands::get_ui_language,
+            commands::set_ui_language,
             commands::open_full_disk_access_settings,
             commands::list_pending,
             commands::current_activity,

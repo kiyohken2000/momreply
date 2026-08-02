@@ -29,7 +29,10 @@ export function listKeyStatuses(): Promise<KeyStatus[]> {
 }
 
 /** 保存して疎通テストまで行う（仕様書 7.5.5）。 */
-export function setApiKey(provider: ProviderId, key: string): Promise<KeyStatus> {
+export function setApiKey(
+  provider: ProviderId,
+  key: string,
+): Promise<KeyStatus> {
   return invoke("set_api_key", { provider, key });
 }
 
@@ -44,6 +47,16 @@ export function deleteApiKey(provider: ProviderId): Promise<void> {
 
 export function canEnableAutoSend(): Promise<boolean> {
   return invoke("can_enable_auto_send");
+}
+
+/** 保存された表示言語。未設定なら空文字。 */
+export function getUiLanguage(): Promise<string> {
+  return invoke("get_ui_language");
+}
+
+/** Rust 側の通知とツールチップも同じ値を読む。 */
+export function setUiLanguage(lang: string): Promise<void> {
+  return invoke("set_ui_language", { lang });
 }
 
 /** chat.db を読めるか。フルディスクアクセスの有無がここに出る。 */
@@ -81,9 +94,8 @@ export function listPending(): Promise<Pending[]> {
 /** いま裏で何をしているか。していなければ null。 */
 export type Activity = {
   who: string;
+  /** 文言は i18n（`activity.<phase>`）にある。 */
   phase: "settling" | "generating";
-  /** 画面に出す文言。Rust 側で決めている。 */
-  label: string;
 };
 
 /**
@@ -140,12 +152,13 @@ export function setRunMode(autoSend: boolean, dryRun: boolean): Promise<void> {
   return invoke("set_run_mode", { autoSend, dryRun });
 }
 
+/** 表示名は i18n（`length.<id>`）にある。 */
 export const LENGTH_PRESETS = [
-  { id: "short", label: "短め" },
-  { id: "mirror", label: "合わせる" },
-  { id: "normal", label: "ふつう" },
-  { id: "long", label: "長め" },
-  { id: "very_long", label: "かなり長め" },
+  "short",
+  "mirror",
+  "normal",
+  "long",
+  "very_long",
 ] as const;
 
 /** 目標文字数の指定は `chars:400` の形で reply_preset に入る。 */

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { currentActivity, type Activity } from "../api";
+import { useLang } from "../lang";
 
 /** 状態が変わったことを知らせる合図。Rust 側の `EVENT_ACTIVITY` と対。 */
 const ACTIVITY = "momreply://activity";
@@ -15,11 +16,14 @@ const ACTIVITY = "momreply://activity";
  * どのタブを見ていても目に入るよう、ヘッダーに置く。
  */
 export default function ActivityBar() {
+  const { t } = useLang();
   const [activity, setActivity] = useState<Activity | null>(null);
 
   useEffect(() => {
     // 開いた時点で既に動いていることがある。合図では拾えないので読みに行く。
-    void currentActivity().then(setActivity).catch(() => {});
+    void currentActivity()
+      .then(setActivity)
+      .catch(() => {});
 
     const un = listen<Activity | null>(ACTIVITY, (e) => setActivity(e.payload));
     return () => {
@@ -36,7 +40,7 @@ export default function ActivityBar() {
         className="inline-block h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-blue-500 border-t-transparent"
       />
       <span className="text-[11px] text-blue-800 dark:text-blue-200">
-        {activity.who} ・ {activity.label}
+        {activity.who} ・ {t(`activity.${activity.phase}`)}
       </span>
     </div>
   );

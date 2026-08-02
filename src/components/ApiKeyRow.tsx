@@ -9,6 +9,7 @@ import {
   type ModelSetting,
   type ProviderId,
 } from "../api";
+import { useLang } from "../lang";
 
 type Props = {
   status: KeyStatus;
@@ -25,7 +26,13 @@ type Phase = "idle" | "saving" | "verifying" | "deleting";
  * 入力欄の値は保存に成功した時点で即座に空にする。
  * React の state にキーを残さない。
  */
-export default function ApiKeyRow({ status, model, onChange, onModelChange }: Props) {
+export default function ApiKeyRow({
+  status,
+  model,
+  onChange,
+  onModelChange,
+}: Props) {
+  const { t } = useLang();
   const [draft, setDraft] = useState("");
   const [phase, setPhase] = useState<Phase>("idle");
   const [failure, setFailure] = useState<string | null>(null);
@@ -87,7 +94,9 @@ export default function ApiKeyRow({ status, model, onChange, onModelChange }: Pr
   return (
     <div className="border-b border-neutral-200 px-4 py-3 last:border-b-0 dark:border-neutral-700">
       <div className="flex items-center justify-between gap-2">
-        <span className="text-sm font-medium">{PROVIDER_LABELS[provider] ?? provider}</span>
+        <span className="text-sm font-medium">
+          {PROVIDER_LABELS[provider] ?? provider}
+        </span>
         <StatusBadge status={status} />
       </div>
 
@@ -105,7 +114,9 @@ export default function ApiKeyRow({ status, model, onChange, onModelChange }: Pr
 
       {model && (
         <label className="mt-2 flex items-center gap-2">
-          <span className="shrink-0 text-xs text-neutral-500 dark:text-neutral-400">モデル</span>
+          <span className="shrink-0 text-xs text-neutral-500 dark:text-neutral-400">
+            {t("key.model")}
+          </span>
           <input
             type="text"
             value={modelDraft ?? model.model}
@@ -136,7 +147,7 @@ export default function ApiKeyRow({ status, model, onChange, onModelChange }: Pr
             disabled={busy}
             className="rounded border border-neutral-300 px-2 py-1 text-xs disabled:opacity-50 dark:border-neutral-600"
           >
-            {phase === "verifying" ? "検証中…" : "再検証"}
+            {phase === "verifying" ? t("key.verifying") : t("key.verify")}
           </button>
           <button
             type="button"
@@ -144,7 +155,7 @@ export default function ApiKeyRow({ status, model, onChange, onModelChange }: Pr
             disabled={busy}
             className="rounded border border-neutral-300 px-2 py-1 text-xs text-red-600 disabled:opacity-50 dark:border-neutral-600 dark:text-red-400"
           >
-            削除
+            {t("key.delete")}
           </button>
         </div>
       ) : (
@@ -159,7 +170,7 @@ export default function ApiKeyRow({ status, model, onChange, onModelChange }: Pr
             type="password"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
-            placeholder="APIキーを貼り付け"
+            placeholder={t("key.placeholder")}
             autoComplete="off"
             spellCheck={false}
             autoCorrect="off"
@@ -172,7 +183,7 @@ export default function ApiKeyRow({ status, model, onChange, onModelChange }: Pr
             disabled={busy || !draft.trim()}
             className="rounded bg-blue-600 px-3 py-1 text-xs text-white disabled:opacity-40"
           >
-            {phase === "saving" ? "検証中…" : "保存"}
+            {phase === "saving" ? t("key.verifying") : t("common.save")}
           </button>
         </form>
       )}
@@ -181,11 +192,18 @@ export default function ApiKeyRow({ status, model, onChange, onModelChange }: Pr
 }
 
 function StatusBadge({ status }: { status: KeyStatus }) {
+  const { t } = useLang();
   if (!status.configured) {
     return <span className="text-xs text-neutral-400">○ 未設定</span>;
   }
   if (status.verified) {
-    return <span className="text-xs text-green-600 dark:text-green-400">● 検証済み</span>;
+    return (
+      <span className="text-xs text-green-600 dark:text-green-400">
+        ● {t("key.verified")}
+      </span>
+    );
   }
-  return <span className="text-xs text-amber-600 dark:text-amber-400">⚠ 未検証</span>;
+  return (
+    <span className="text-xs text-amber-600 dark:text-amber-400">⚠ 未検証</span>
+  );
 }

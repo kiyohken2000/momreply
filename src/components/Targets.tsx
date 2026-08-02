@@ -18,9 +18,11 @@ import {
   type Limits,
   type TargetView,
 } from "../api";
+import { useLang } from "../lang";
 
 /** 相手ごとの設定と、暴走を止める上限（仕様書 6.4.5）。 */
 export default function Targets() {
+  const { t } = useLang();
   const [targets, setTargets] = useState<TargetView[] | null>(null);
   const [limits, setLimits] = useState<Limits | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -99,7 +101,11 @@ export default function Targets() {
   }
 
   if (targets === null) {
-    return <p className="px-4 py-4 text-xs text-neutral-400">読み込み中…</p>;
+    return (
+      <p className="px-4 py-4 text-xs text-neutral-400">
+        {t("common.loading")}
+      </p>
+    );
   }
 
   /*
@@ -122,12 +128,12 @@ export default function Targets() {
               : "text-xs text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-100"
           }
         >
-          {first ? "+ 相手を追加" : "+ 別の相手を追加"}
+          {first ? t("targets.addFirst") : t("targets.addAnother")}
         </button>
       ) : (
         <div>
           <div className="text-[11px] text-neutral-500 dark:text-neutral-400">
-            会話を選ぶ（本文は読み込みません）
+            {t("targets.pickChat")}
           </div>
           <select
             value={picked}
@@ -141,7 +147,7 @@ export default function Targets() {
             }}
             className="mt-1 w-full rounded border border-neutral-300 px-2 py-1 text-xs dark:border-neutral-600 dark:bg-neutral-800"
           >
-            <option value="">選択してください</option>
+            <option value="">{t("targets.pickPlaceholder")}</option>
             {(chats ?? [])
               .filter((c) => !c.registered)
               .map((c) => (
@@ -156,13 +162,12 @@ export default function Targets() {
             type="text"
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
-            placeholder="表示名"
+            placeholder={t("targets.namePlaceholder")}
             className="mt-2 w-full rounded border border-neutral-300 px-2 py-1 text-xs dark:border-neutral-600 dark:bg-neutral-800"
           />
 
           <p className="mt-1 text-[10px] text-neutral-400">
-            登録した時点より前のメッセージは処理されません。過去分に一斉返信する
-            事故を防ぐためです。
+            {t("targets.backlogNote")}
           </p>
 
           <div className="mt-2 flex gap-2">
@@ -172,14 +177,14 @@ export default function Targets() {
               onClick={() => void submitAdd()}
               className="rounded bg-blue-600 px-3 py-1 text-xs text-white disabled:opacity-40"
             >
-              登録
+              {t("targets.register")}
             </button>
             <button
               type="button"
               onClick={() => setAdding(false)}
               className="text-xs text-neutral-500 dark:text-neutral-400"
             >
-              やめる
+              {t("common.cancel")}
             </button>
           </div>
         </div>
@@ -200,7 +205,7 @@ export default function Targets() {
 
       {targets.length === 0 && !adding && (
         <p className="px-4 py-4 text-xs text-neutral-400">
-          返信する相手がまだ選ばれていません。
+          {t("targets.none")}
         </p>
       )}
 
@@ -210,23 +215,23 @@ export default function Targets() {
         </div>
       )}
 
-      {targets.map((t) => (
+      {targets.map((x) => (
         <section
-          key={t.slug}
+          key={x.slug}
           className="border-b border-neutral-200 px-4 py-3 dark:border-neutral-700"
         >
           <div className="flex items-baseline justify-between gap-2">
-            <span className="text-sm font-medium">{t.display_name}</span>
+            <span className="text-sm font-medium">{x.display_name}</span>
             <button
               type="button"
-              onClick={() => setConfirmRemove(t.slug)}
+              onClick={() => setConfirmRemove(x.slug)}
               className="shrink-0 text-[11px] text-neutral-400 hover:text-red-600"
             >
               削除
             </button>
           </div>
           <div className="text-[11px] break-all text-neutral-400">
-            {t.handles.join(", ")}
+            {x.handles.join(", ")}
           </div>
 
           {/* 手本が無いと文体が再現されない。0 のときは目立たせる。 */}
@@ -234,19 +239,19 @@ export default function Targets() {
             <span
               className={
                 "text-[11px] " +
-                (t.fewshot_count === 0 ? "text-amber-600" : "text-neutral-400")
+                (x.fewshot_count === 0 ? "text-amber-600" : "text-neutral-400")
               }
             >
-              文体の手本 {t.fewshot_count} 組
-              {t.fewshot_count === 0 && "（このままだと文体が再現されません）"}
+              {t("targets.fewshot", { n: x.fewshot_count })}
+              {x.fewshot_count === 0 && t("targets.fewshotNone")}
             </span>
             <button
               type="button"
               onClick={() =>
                 void (async () => {
                   try {
-                    const n = await rebuildFewshot(t.slug);
-                    setMessage(`文体の手本を ${n} 組作りました。`);
+                    const n = await rebuildFewshot(x.slug);
+                    setMessage(t("targets.rebuildDone", { n }));
                     await load();
                   } catch (e) {
                     setError(String(e));
@@ -255,7 +260,7 @@ export default function Targets() {
               }
               className="rounded border border-neutral-300 px-2 py-0.5 text-[10px] dark:border-neutral-600"
             >
-              作り直す
+              {t("targets.rebuild")}
             </button>
           </div>
 
@@ -263,21 +268,23 @@ export default function Targets() {
               ここを見ないと「壊れた」のか「止められた」のか分からない。 */}
           <div className="mt-2 flex items-center gap-2">
             <span className="flex-1 text-[11px] text-neutral-500 dark:text-neutral-400">
-              連続 {t.consecutive_auto}
-              {limits && ` / ${limits.max_consecutive_auto}`}
-              {" ・ "}1時間 {t.sent_last_hour}
-              {limits && ` / ${limits.max_per_hour}`}
-              {" ・ "}24時間 {t.sent_last_day}
-              {limits && ` / ${limits.max_per_day}`}
+              {t("targets.counters", {
+                consecutive: x.consecutive_auto,
+                maxConsecutive: limits?.max_consecutive_auto ?? "—",
+                hour: x.sent_last_hour,
+                maxHour: limits?.max_per_hour ?? "—",
+                day: x.sent_last_day,
+                maxDay: limits?.max_per_day ?? "—",
+              })}
             </span>
             <button
               type="button"
-              disabled={t.consecutive_auto === 0}
+              disabled={x.consecutive_auto === 0}
               onClick={() =>
                 void (async () => {
                   try {
-                    await resetConsecutive(t.slug);
-                    setMessage("連続カウントを 0 に戻しました。");
+                    await resetConsecutive(x.slug);
+                    setMessage(t("targets.resetDone"));
                     await load();
                   } catch (e) {
                     setError(String(e));
@@ -286,36 +293,34 @@ export default function Targets() {
               }
               className="rounded border border-neutral-300 px-2 py-0.5 text-[10px] disabled:opacity-40 dark:border-neutral-600"
             >
-              連続を0に戻す
+              {t("targets.resetStreak")}
             </button>
           </div>
-          {limits && t.consecutive_auto >= limits.max_consecutive_auto && (
+          {limits && x.consecutive_auto >= limits.max_consecutive_auto && (
             <p className="mt-1 text-[10px] text-amber-600">
-              上限に達しています。自動送信は止まり、確認待ちに溜まります。
+              {t("targets.atLimit")}
             </p>
           )}
 
-          {confirmRemove === t.slug && (
+          {confirmRemove === x.slug && (
             <div className="mt-2 rounded border border-red-300 bg-red-50 p-2 dark:border-red-800 dark:bg-red-950/40">
               <p className="text-[11px]">
-                {t.display_name} を削除すると、
-                <strong>処理履歴と文体の手本もまとめて消えます。</strong>
-                元に戻せません。
+                {t("targets.removeWarning", { name: x.display_name })}
               </p>
               <div className="mt-1 flex gap-2">
                 <button
                   type="button"
-                  onClick={() => void doRemove(t.slug)}
+                  onClick={() => void doRemove(x.slug)}
                   className="rounded bg-red-600 px-2 py-0.5 text-[11px] text-white"
                 >
-                  削除する
+                  {t("common.delete")}
                 </button>
                 <button
                   type="button"
                   onClick={() => setConfirmRemove(null)}
                   className="text-[11px] text-neutral-500 dark:text-neutral-400"
                 >
-                  やめる
+                  {t("common.cancel")}
                 </button>
               </div>
             </div>
@@ -328,24 +333,24 @@ export default function Targets() {
             <div className="mt-1 flex flex-wrap gap-1">
               {LENGTH_PRESETS.map((p) => (
                 <button
-                  key={p.id}
+                  key={p}
                   type="button"
-                  onClick={() => void patch(t.slug, { replyPreset: p.id })}
+                  onClick={() => void patch(x.slug, { replyPreset: p })}
                   className={
                     "rounded px-2 py-0.5 text-[11px] " +
-                    (t.reply_preset === p.id
+                    (x.reply_preset === p
                       ? "bg-blue-600 text-white"
                       : "border border-neutral-300 dark:border-neutral-600")
                   }
                 >
-                  {p.label}
+                  {t(`length.${p}`)}
                 </button>
               ))}
             </div>
             <TargetChars
-              value={targetChars(t.reply_preset)}
+              value={targetChars(x.reply_preset)}
               onChange={(chars) =>
-                void patch(t.slug, {
+                void patch(x.slug, {
                   // 空にしたらプリセットへ戻す。長さの指定が
                   // 何も無い状態は作らない。
                   replyPreset:
@@ -360,9 +365,9 @@ export default function Targets() {
             <input
               type="checkbox"
               className="mt-0.5"
-              checked={t.auto_send}
+              checked={x.auto_send}
               onChange={(e) =>
-                void patch(t.slug, { autoSend: e.target.checked })
+                void patch(x.slug, { autoSend: e.target.checked })
               }
             />
             <span className="text-xs">
@@ -387,25 +392,25 @@ export default function Targets() {
       {limits && (
         <section className="px-4 py-3">
           <h3 className="text-xs font-semibold tracking-wide text-neutral-500 uppercase dark:text-neutral-400">
-            暴走を止める上限
+            {t("targets.limitsTitle")}
           </h3>
           <p className="mt-1 text-[10px] text-neutral-400">
-            放置して使う場合、ここが最後の歯止めになります。
+            {t("targets.limitsNote")}
           </p>
 
           <LimitRow
-            label="連続で自動返信する上限"
-            hint="これを超えると確認モードに落ちます。放置運用ではここが最初に効きます。"
+            label={t("targets.limit.consecutive")}
+            hint={t("targets.limitHint")}
             value={limits.max_consecutive_auto}
             onChange={(v) => void limit("max_consecutive_auto", v)}
           />
           <LimitRow
-            label="1時間あたりの送信数"
+            label={t("targets.limit.perHour")}
             value={limits.max_per_hour}
             onChange={(v) => void limit("max_per_hour", v)}
           />
           <LimitRow
-            label="1日あたりの送信数"
+            label={t("targets.limit.perDay")}
             value={limits.max_per_day}
             onChange={(v) => void limit("max_per_day", v)}
           />
@@ -471,6 +476,7 @@ function TargetChars({
   value: number | null;
   onChange: (chars: number | null) => void;
 }) {
+  const { t } = useLang();
   const [draft, setDraft] = useState(value === null ? "" : String(value));
 
   // 別の場所でプリセットが選ばれたら、こちらの表示も追従させる。
@@ -498,7 +504,7 @@ function TargetChars({
     <div className="mt-2">
       <div className="flex items-center gap-2">
         <span className="flex-1 text-[11px] text-neutral-500 dark:text-neutral-400">
-          目標文字数
+          {t("targets.targetChars")}
         </span>
         <input
           type="number"
@@ -517,12 +523,17 @@ function TargetChars({
           }}
           className="w-20 rounded border border-neutral-300 px-2 py-0.5 text-right text-xs dark:border-neutral-600 dark:bg-neutral-800"
         />
-        <span className="text-[11px] text-neutral-400">文字</span>
+        <span className="text-[11px] text-neutral-400">
+          {t("targets.charsUnit")}
+        </span>
       </div>
       <p className="mt-0.5 text-[10px] text-neutral-400">
         {value === null
-          ? `入れるとプリセットより優先されます（${MIN_TARGET_CHARS}〜${MAX_TARGET_CHARS}）。`
-          : "空にするとプリセットに戻ります。"}
+          ? t("targets.charsHintEmpty", {
+              min: MIN_TARGET_CHARS,
+              max: MAX_TARGET_CHARS,
+            })
+          : t("targets.charsHintSet")}
       </p>
     </div>
   );

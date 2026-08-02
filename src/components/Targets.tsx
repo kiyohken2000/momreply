@@ -279,7 +279,8 @@ export default function Targets() {
             </span>
             <button
               type="button"
-              disabled={x.consecutive_auto === 0}
+              // 0 のときも押せるままにする。押しても何も変わらないが、
+              // 灰色にすると「壊れた」と読まれる。実際そう報告された。
               onClick={() =>
                 void (async () => {
                   try {

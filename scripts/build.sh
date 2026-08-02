@@ -50,8 +50,10 @@ UPDATER_KEY="${MOMREPLY_UPDATER_KEY:-$HOME/.tauri/momreply.key}"
 #
 # **リポジトリには絶対に入れない。** 既定の置き場所は ~/.tauri/。
 if [ -f "$UPDATER_KEY" ]; then
-	TAURI_SIGNING_PRIVATE_KEY_PATH="$UPDATER_KEY"
-	export TAURI_SIGNING_PRIVATE_KEY_PATH
+	# 鍵の**中身**を渡す。TAURI_SIGNING_PRIVATE_KEY_PATH は見てもらえず、
+	# 「公開鍵はあるが秘密鍵が無い」で最後に落ちる。
+	TAURI_SIGNING_PRIVATE_KEY=$(cat "$UPDATER_KEY")
+	export TAURI_SIGNING_PRIVATE_KEY
 	export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
 	echo "==> 更新用の署名鍵: $UPDATER_KEY"
 else

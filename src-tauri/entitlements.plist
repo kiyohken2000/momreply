@@ -4,22 +4,22 @@
 <dict>
   <!--
     公証には Hardened Runtime が要る。ただし素のままだと必要な動作まで
-    止まるので、使うものだけ開ける。
+    止まるので、使うものだけ開ける。**開けすぎると起動しない。**
 
-    - JIT / unsigned-executable-memory は要求しない。WebKit は
-      Tauri 側の WebView プロセスが持つ権利で動く。
-    - App Sandbox は入れない。chat.db（~/Library/Messages）を読むには
+    - keychain-access-groups は入れない。制限付きエンタイトルメントで、
+      対応する provisioning profile が埋め込まれていないと launchd が
+      起動を拒否する（POSIX 163）。実際に入れて起動しなくなった。
+      Developer ID のアプリは、宣言しなくても自分のグループの Keychain
+      項目を読み書きできる。
+    - App Sandbox も入れない。chat.db（~/Library/Messages）を読むには
       フルディスクアクセスが要り、サンドボックス内からは付与できない。
+    - JIT / unsigned-executable-memory は要求しない。WebView は
+      Tauri 側のプロセスが持つ権利で動く。
   -->
 
-  <!-- osascript でメッセージ.app に送信する（仕様書 6.3）。 -->
+  <!-- osascript でメッセージ.app に送信する（仕様書 6.3）。
+       Hardened Runtime 下で Apple Events を送るにはこれが要る。 -->
   <key>com.apple.security.automation.apple-events</key>
   <true/>
-
-  <!-- Keychain に API キーを置く。 -->
-  <key>keychain-access-groups</key>
-  <array>
-    <string>$(AppIdentifierPrefix)net.votepurchase.momreply</string>
-  </array>
 </dict>
 </plist>

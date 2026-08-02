@@ -718,6 +718,107 @@ fn preview_blocking(slug: &str) -> Result<Preview, String> {
     })
 }
 
+/// 直近の受信で返信案を作り、**確認待ちに積む**。
+///
+/// # なぜ処理位置の巻き戻しにしないか
+///
+/// 仕様書 6.1 の登録前バックログ保護は、過去の会話へ自動で返信が飛ぶのを
+/// 防ぐためにある。`last_seen_rowid` を UI から巻き戻せるようにすると、
+/// その保護を外す経路そのものができる。自動送信が有効なら、巻き戻した分の
+/// 古いメッセージへ実際に返信が飛ぶ。
+///
+/// ここは違う。**最新の受信 1 件だけ**を、**必ず `awaiting_review` として**
+/// 積む。ガードの判定を通らないので、押しても勝手には送信されない。
+/// 送るかどうかは返信タブで人が決める（送信直前の既返信チェックは
+/// `run::send_manual` の中にある）。
+#[tauri::command]
+pub async fn draft_latest(slug: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || draft_latest_blocking(&slug))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn draft_latest_blocking(slug: &str) -> Result<String, String> {
+    use momreply_core::pipeline::{draft_reply, LengthPreset, Urgency};
+
+    let chat_db = open_chat_db()?;
+    let store = Store::open_default().map_err(|e| e.to_string())?;
+    let target = store
+        .target_by_slug(slug)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("'{slug}' は登録されていません"))?;
+
+    let message = momreply_core::imessage::recent_messages(&chat_db, &target.handles, 50)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|m| !m.is_from_me && m.skip.is_none() && m.body.is_some())
+        .next_back()
+        .ok_or("返信できる受信メッセージが見つかりません")?;
+
+    // 自分から返信済みのものに、あとから案を積まない（仕様書 6.4.3）。
+    if momreply_core::imessage::count_own_replies_after(&chat_db, &target.handles, message.rowid)
+        .map_err(|e| e.to_string())?
+        > 0
+    {
+        return Err("この受信には既に自分から返信しています".into());
+    }
+
+    if store
+        .pending_items(50)
+        .map_err(|e| e.to_string())?
+        .iter()
+        .any(|i| i.chat_rowid == message.rowid)
+    {
+        return Err("この受信の返信案は既に確認待ちにあります".into());
+    }
+
+    let preset = LengthPreset::parse(&target.reply_preset).unwrap_or(LengthPreset::Mirror);
+    let draft = tauri::async_runtime::block_on(draft_reply(
+        &chat_db,
+        &store,
+        &target,
+        &message,
+        preset,
+        None,
+        Urgency::Interactive,
+    ))
+    .map_err(|e| e.to_string())?;
+
+    if draft.text.trim().is_empty() {
+        return Err(if draft.unanswerable.is_empty() {
+            "返信案が空でした".into()
+        } else {
+            format!("答える材料が足りません: {}", draft.unanswerable.join(" / "))
+        });
+    }
+
+    store
+        .record_processed(
+            target.id,
+            message.rowid,
+            &message.chat_identifier,
+            message.date.timestamp(),
+            message.body.as_deref(),
+            "awaiting_review",
+            Some("manual"),
+            Some(&draft.text),
+            Some(&draft.provider),
+            Some(&draft.model),
+        )
+        .map_err(|e| e.to_string())?;
+
+    // 監視スレッドが同じ受信をもう一度拾わないよう処理位置を進める。
+    // **進めるだけで、決して戻さない。**
+    let runtime = store.target_runtime(target.id).map_err(|e| e.to_string())?;
+    if runtime.last_seen_rowid.unwrap_or(0) < message.rowid {
+        store
+            .set_last_seen_rowid(target.id, message.rowid)
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok("返信タブに入れました".into())
+}
+
 /// 文体の手本を作り直す。会話が増えたときに使う。
 #[tauri::command]
 pub fn rebuild_fewshot(slug: String) -> Result<usize, String> {

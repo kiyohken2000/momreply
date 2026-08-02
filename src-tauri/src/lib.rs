@@ -48,6 +48,7 @@ pub fn run() {
             commands::remove_target,
             commands::rebuild_fewshot,
             commands::preview_reply,
+            commands::draft_latest,
             commands::update_target,
             commands::get_limits,
             commands::set_limit,

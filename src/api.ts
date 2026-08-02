@@ -181,6 +181,14 @@ export function previewReply(slug: string): Promise<Preview> {
   return invoke("preview_reply", { slug });
 }
 
+/**
+ * 直近の受信で返信案を作り、確認待ち（返信タブ）に積む。
+ * 必ず確認待ちに入るので、押しただけでは送信されない。
+ */
+export function draftLatest(slug: string): Promise<string> {
+  return invoke("draft_latest", { slug });
+}
+
 /** 過去のやり取りから文体の手本を作り直す。 */
 export function rebuildFewshot(slug: string): Promise<number> {
   return invoke("rebuild_fewshot", { slug });

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   addTarget,
+  draftLatest,
   getLimits,
   listChatChoices,
   listTargets,
@@ -30,7 +31,7 @@ const MODES = [
 ] as const;
 
 /** 相手ごとの設定と、暴走を止める上限（仕様書 6.4.5）。 */
-export default function Targets() {
+export default function Targets({ onDrafted }: { onDrafted?: () => void }) {
   const [targets, setTargets] = useState<TargetView[] | null>(null);
   const [limits, setLimits] = useState<Limits | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -42,6 +43,7 @@ export default function Targets() {
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [previewing, setPreviewing] = useState<string | null>(null);
+  const [drafting, setDrafting] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -305,11 +307,41 @@ export default function Targets() {
             </div>
           </div>
 
-          {/* 試し生成。処理位置を動かさないので、何度押しても安全。 */}
+          {/* 返信案を確認待ちに積む。必ず人の確認を挟むので、押しても飛ばない。 */}
           <div className="mt-3">
             <button
               type="button"
-              disabled={previewing !== null}
+              disabled={drafting !== null || previewing !== null}
+              onClick={() =>
+                void (async () => {
+                  setDrafting(t.slug);
+                  setPreview(null);
+                  setError(null);
+                  setMessage(null);
+                  try {
+                    setMessage(await draftLatest(t.slug));
+                    onDrafted?.();
+                  } catch (e) {
+                    setError(String(e));
+                  } finally {
+                    setDrafting(null);
+                  }
+                })()
+              }
+              className="rounded bg-blue-600 px-2 py-1 text-xs text-white disabled:opacity-40"
+            >
+              {drafting === t.slug ? "生成中…" : "直近の受信に返信を作る"}
+            </button>
+            <p className="mt-1 text-[10px] text-neutral-400">
+              返信タブに入ります。送信するかどうかは、そこで見てから決められます。
+            </p>
+          </div>
+
+          {/* 試し生成。記録も処理位置も動かさないので、何度押しても安全。 */}
+          <div className="mt-3">
+            <button
+              type="button"
+              disabled={previewing !== null || drafting !== null}
               onClick={() =>
                 void (async () => {
                   setPreviewing(t.slug);

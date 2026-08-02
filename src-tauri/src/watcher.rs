@@ -11,7 +11,7 @@ use momreply_core::{
     pipeline::{self, LengthPreset},
     store::Store,
 };
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 
 use crate::notify;
 
@@ -98,6 +98,10 @@ fn tick(app: &AppHandle, chat_db: &rusqlite::Connection, gap: bool) -> anyhow::R
             let outcome = tauri::async_runtime::block_on(pipeline::process(
                 chat_db, &store, &target, &message, &options,
             ))?;
+
+            // 画面を開いたまま処理が進むことがある。開いた時点の一覧は
+            // 古くなるので、更新の合図を送る（[`crate::EVENT_UPDATED`]）。
+            let _ = app.emit(crate::EVENT_UPDATED, ());
 
             let who = &target.display_name;
             match outcome {

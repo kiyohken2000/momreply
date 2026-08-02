@@ -9,6 +9,13 @@ mod notify;
 mod tray;
 mod watcher;
 
+/// 処理が進んだことをフロントに知らせる合図。
+///
+/// ポップオーバーを開いたままでも一覧が古くならないようにする。
+/// 送るのは合図だけで、中身は載せない。本文は必要になったときに
+/// コマンド経由で取りに行く。
+pub const EVENT_UPDATED: &str = "momreply://updated";
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_positioner::init())

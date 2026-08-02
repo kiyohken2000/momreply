@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import {
   conversation,
   draftLatest,
@@ -13,6 +14,9 @@ import {
   type TargetView,
   type Turn,
 } from "../api";
+
+/** 処理が進んだことを知らせる合図。Rust 側の `EVENT_UPDATED` と対。 */
+const UPDATED = "momreply://updated";
 
 /** 実行中の操作。何が起きているか分からない時間を作らないために持つ。 */
 type Busy = null | "regen" | "send" | "skip";
@@ -58,7 +62,38 @@ export default function Replies() {
     void load();
   }, [load]);
 
+  // 書きかけを踏まないために、いまの状態を購読側から読む。
+  // 購読を張り替えずに最新の値を見たいので ref で持つ。
+  const editing = useRef(false);
+
+  /*
+   * 裏で処理が進んでも、開いたままの画面は古いままになる。
+   * 監視スレッドの合図で読み直す（[`EVENT_UPDATED`]）。
+   *
+   * **書きかけの下書きがあるときは読み直さない。** 一覧が入れ替わると
+   * 編集中の案が別のものにすり替わり、書いた内容が消える。
+   */
+  useEffect(() => {
+    const un = listen(UPDATED, () => {
+      if (!editing.current) void load();
+    });
+    return () => {
+      void un.then((f) => f());
+    };
+  }, [load]);
+
+  // ポップオーバーを開き直したときにも読み直す。
+  // アプリが止まっていた間の分は、合図では拾えない。
+  useEffect(() => {
+    const onFocus = () => {
+      if (!editing.current) void load();
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [load]);
+
   const current = items?.[index];
+  editing.current = busy !== null || (!!current && draft !== current.draft);
 
   useEffect(() => {
     setDraft(current?.draft ?? "");
@@ -350,7 +385,7 @@ function Recent({ slug }: { slug: string }) {
   const [turns, setTurns] = useState<Turn[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     recentConversation(slug)
       .then(setTurns)
       .catch((e) => {
@@ -358,6 +393,18 @@ function Recent({ slug }: { slug: string }) {
         setTurns([]);
       });
   }, [slug]);
+
+  useEffect(() => load(), [load]);
+
+  // 自動送信された返信は、この一覧に現れて初めて見える。
+  useEffect(() => {
+    const un = listen(UPDATED, load);
+    window.addEventListener("focus", load);
+    return () => {
+      void un.then((f) => f());
+      window.removeEventListener("focus", load);
+    };
+  }, [load]);
 
   if (error) {
     return <p className="mt-1 text-[11px] break-words text-red-600">{error}</p>;

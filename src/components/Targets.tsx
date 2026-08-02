@@ -6,7 +6,7 @@ import {
   listTargets,
   removeTarget,
   rebuildFewshot,
-  resetConsecutive,
+  resetCounters,
   setLimit,
   targetChars,
   updateTarget,
@@ -284,7 +284,7 @@ export default function Targets() {
               onClick={() =>
                 void (async () => {
                   try {
-                    await resetConsecutive(x.slug);
+                    await resetCounters(x.slug);
                     setMessage(t("targets.resetDone"));
                     await load();
                   } catch (e) {
@@ -294,9 +294,10 @@ export default function Targets() {
               }
               className="rounded border border-neutral-300 px-2 py-0.5 text-[10px] disabled:opacity-40 dark:border-neutral-600"
             >
-              {t("targets.resetStreak")}
+              {t("targets.resetCounters")}
             </button>
           </div>
+          <p className="mt-0.5 text-[10px] text-neutral-400">{t("targets.resetNote")}</p>
           {limits && x.consecutive_auto >= limits.max_consecutive_auto && (
             <p className="mt-1 text-[10px] text-amber-600">
               {t("targets.atLimit")}

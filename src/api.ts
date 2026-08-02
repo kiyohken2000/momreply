@@ -230,11 +230,11 @@ export type TargetView = {
 };
 
 /**
- * 連続自動返信のカウントを 0 に戻す。
- * 1 時間 / 24 時間あたりの件数は送信履歴から数えているので戻せない。
+ * 上限のカウントを 0 に戻す。連続・1 時間・24 時間のすべて。
+ * 送信履歴は消えない。数え直しの起点が動くだけ。
  */
-export function resetConsecutive(slug: string): Promise<void> {
-  return invoke("reset_consecutive", { slug });
+export function resetCounters(slug: string): Promise<void> {
+  return invoke("reset_counters", { slug });
 }
 
 /**

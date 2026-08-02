@@ -62,7 +62,7 @@ pub fn run() {
             commands::add_target,
             commands::remove_target,
             commands::rebuild_fewshot,
-            commands::reset_consecutive,
+            commands::reset_counters,
             commands::draft_latest,
             commands::update_target,
             commands::get_limits,

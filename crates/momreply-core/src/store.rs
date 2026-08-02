@@ -13,7 +13,7 @@ use rusqlite::{Connection, OptionalExtension};
 use crate::imessage;
 
 /// スキーマバージョン。`PRAGMA user_version` で管理する。
-const SCHEMA_VERSION: i32 = 6;
+const SCHEMA_VERSION: i32 = 7;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS targets (
@@ -46,7 +46,10 @@ CREATE TABLE IF NOT EXISTS target_state (
   consecutive_auto_count INTEGER NOT NULL DEFAULT 0,
   session_started_at     INTEGER,
   last_sent_at           INTEGER,
-  length_preset_override TEXT
+  length_preset_override TEXT,
+  -- レート制限をここから数え直す（仕様書には無い）。
+  -- 履歴そのものは消さない。消すと何を送ったかの記録まで失われる。
+  rate_reset_at          INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS processed_messages (
@@ -238,6 +241,17 @@ impl Store {
         Ok(store)
     }
 
+    fn has_column(&self, table: &str, column: &str) -> Result<bool> {
+        let mut stmt = self.conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            if row.get::<_, String>(1)? == column {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     fn migrate(&mut self) -> Result<()> {
         let version: i32 =
             self.conn
@@ -249,6 +263,12 @@ impl Store {
             );
         }
         self.conn.execute_batch(SCHEMA)?;
+
+        // v7: レート制限の数え直し。
+        if !self.has_column("target_state", "rate_reset_at")? {
+            self.conn
+                .execute("ALTER TABLE target_state ADD COLUMN rate_reset_at INTEGER", [])?;
+        }
 
         // v6: 質問を人に聞く仕組みをやめた。生成は常に「おまかせ」で、
         // 確定的な答えを出さないので、聞くべきことがそもそも出ない。
@@ -680,15 +700,35 @@ impl Store {
     // MARK: ガードに渡す集計
 
     /// 直近 `secs` 秒に自動送信した件数。
+    /// 直近 `secs` 秒に自動送信した件数。
+    ///
+    /// `rate_reset_at` より前の送信は数えない。**履歴は残したまま、
+    /// 数え直しの起点だけ動かす。** 履歴を消すと、何を送ったかの記録まで
+    /// 失われる。
     pub fn sent_within(&self, target_id: i64, secs: i64) -> Result<u32> {
         let since = now_unix() - secs;
         let n: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM processed_messages
-             WHERE target_id = ?1 AND status = 'sent' AND sent_at >= ?2",
+            "SELECT COUNT(*) FROM processed_messages p
+             JOIN target_state s ON s.target_id = p.target_id
+             WHERE p.target_id = ?1 AND p.status = 'sent'
+               AND p.sent_at >= ?2
+               AND p.sent_at > COALESCE(s.rate_reset_at, 0)",
             (target_id, since),
             |r| r.get(0),
         )?;
         Ok(n as u32)
+    }
+
+    /// レート制限を数え直す起点を「いま」にする。
+    ///
+    /// 連続カウントと違い、これは**実際に送った件数の歯止めを外す**。
+    /// 押した人が意図して外したことになるので、記録は残す。
+    pub fn reset_rate_window(&self, target_id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE target_state SET rate_reset_at = ?2 WHERE target_id = ?1",
+            (target_id, now_unix()),
+        )?;
+        Ok(())
     }
 
     /// 当月の推定コスト（USD）。
@@ -985,6 +1025,50 @@ mod tests {
             .add_target(&chat_db, new_target("x", "x@example.com"))
             .unwrap();
         assert!(!t.auto_send, "配布物で自動送信が既定 ON になってはいけない");
+    }
+
+    /// 数え直しても、送信履歴そのものは残る。
+    /// 消してしまうと、何を送ったかの記録まで失われる。
+    #[test]
+    fn resetting_the_rate_window_keeps_the_history() {
+        let chat_db = fake_chat_db("r@example.com", 3);
+        let mut store = Store::open_in_memory().unwrap();
+        let t = store
+            .add_target(&chat_db, new_target("r", "r@example.com"))
+            .unwrap();
+
+        for rowid in 1..=3 {
+            store
+                .record_processed(
+                    t.id,
+                    rowid,
+                    "r@example.com",
+                    now_unix(),
+                    Some("やあ"),
+                    "sent",
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap();
+            store.mark_sent(rowid, "うん", Some(rowid + 100)).unwrap();
+        }
+        assert_eq!(store.sent_within(t.id, 3600).unwrap(), 3);
+
+        store.reset_rate_window(t.id).unwrap();
+        assert_eq!(store.sent_within(t.id, 3600).unwrap(), 0);
+
+        // 履歴は残っている。
+        let n: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM processed_messages WHERE status = 'sent'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 3);
     }
 
     #[test]

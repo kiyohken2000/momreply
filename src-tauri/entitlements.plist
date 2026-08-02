@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!--
+    公証には Hardened Runtime が要る。ただし素のままだと必要な動作まで
+    止まるので、使うものだけ開ける。
+
+    - JIT / unsigned-executable-memory は要求しない。WebKit は
+      Tauri 側の WebView プロセスが持つ権利で動く。
+    - App Sandbox は入れない。chat.db（~/Library/Messages）を読むには
+      フルディスクアクセスが要り、サンドボックス内からは付与できない。
+  -->
+
+  <!-- osascript でメッセージ.app に送信する（仕様書 6.3）。 -->
+  <key>com.apple.security.automation.apple-events</key>
+  <true/>
+
+  <!-- Keychain に API キーを置く。 -->
+  <key>keychain-access-groups</key>
+  <array>
+    <string>$(AppIdentifierPrefix)net.votepurchase.momreply</string>
+  </array>
+</dict>
+</plist>

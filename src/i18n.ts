@@ -197,10 +197,14 @@ const DICT = {
     ja: "連続 {consecutive} / {maxConsecutive} ・ 1時間 {hour} / {maxHour} ・ 24時間 {day} / {maxDay}",
     en: "Streak {consecutive}/{maxConsecutive} · 1h {hour}/{maxHour} · 24h {day}/{maxDay}",
   },
-  "targets.resetStreak": { ja: "連続を0に戻す", en: "Reset streak" },
+  "targets.resetCounters": { ja: "カウントを0に戻す", en: "Reset counters" },
+  "targets.resetNote": {
+    ja: "送信履歴は消えません。数え直す起点が動くだけです。",
+    en: "Send history is kept. Only the counting restarts.",
+  },
   "targets.resetDone": {
-    ja: "連続カウントを 0 に戻しました。",
-    en: "Streak reset to 0.",
+    ja: "カウントを 0 に戻しました。",
+    en: "Counters reset to 0.",
   },
   "targets.atLimit": {
     ja: "上限に達しています。自動送信は止まり、確認待ちに溜まります。",

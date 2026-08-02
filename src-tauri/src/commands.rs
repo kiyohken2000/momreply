@@ -886,22 +886,29 @@ fn draft_latest_blocking(slug: &str) -> Result<String, String> {
     Ok("返信タブに入れました".into())
 }
 
-/// 連続自動返信のカウントを 0 に戻す。
+/// 上限のカウントを 0 に戻す。連続・1 時間・24 時間のすべて。
 ///
-/// このカウントだけは手で戻せるようにしてある。上限に当たると自動送信が
-/// 止まって確認モードに落ちるが、放置して使うのが目的なので、
-/// 画面を見た人がその場で戻せないと再開の手段が無くなる。
+/// 上限に当たると自動送信が止まって確認モードに落ちる。放置して使うのが
+/// 目的なので、画面を見た人がその場で戻せないと再開の手段が無くなる。
 ///
-/// **1 時間 / 24 時間あたりの件数は戻せない。** あれは実際の送信履歴から
-/// 数えているので、戻すには履歴を消すことになる。歯止めが嘘になる。
+/// **送信履歴は消さない。** 数え直しの起点を動かすだけで、何を送ったかの
+/// 記録は残る。消してしまうと、あとから追えなくなる。
+///
+/// ただしこれは**実際に送った件数の歯止めを外す操作**である。連続カウント
+/// と違い、押した時点で 1 時間の上限がまるごと空く。
 #[tauri::command]
-pub fn reset_consecutive(slug: String) -> Result<(), String> {
+pub fn reset_counters(slug: String) -> Result<(), String> {
     let store = Store::open_default().map_err(|e| e.to_string())?;
     let target = store
         .target_by_slug(&slug)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("'{slug}' は登録されていません"))?;
-    store.reset_consecutive(target.id).map_err(|e| e.to_string())
+    store
+        .reset_consecutive(target.id)
+        .map_err(|e| e.to_string())?;
+    store
+        .reset_rate_window(target.id)
+        .map_err(|e| e.to_string())
 }
 
 /// 文体の手本を作り直す。会話が増えたときに使う。

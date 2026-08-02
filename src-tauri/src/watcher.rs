@@ -13,7 +13,7 @@ use momreply_core::{
 };
 use tauri::{AppHandle, Emitter};
 
-use crate::notify;
+use crate::{activity, notify};
 
 /// 監視スレッドを起こす。
 ///
@@ -85,6 +85,7 @@ fn tick(app: &AppHandle, chat_db: &rusqlite::Connection, gap: bool) -> anyhow::R
                 imessage::SETTLE_WINDOW,
                 imessage::SETTLE_MAX_WAIT,
             ) {
+                activity::set(app, &target.display_name, activity::Phase::Settling);
                 continue;
             }
         }
@@ -117,9 +118,12 @@ fn tick(app: &AppHandle, chat_db: &rusqlite::Connection, gap: bool) -> anyhow::R
                 session_gap: Duration::from_secs(180 * 60),
             };
 
+            activity::set(app, &target.display_name, activity::Phase::Generating);
             let outcome = tauri::async_runtime::block_on(pipeline::process(
                 chat_db, &store, &target, &message, &options,
-            ))?;
+            ));
+            activity::clear(app);
+            let outcome = outcome?;
 
             // 画面を開いたまま処理が進むことがある。開いた時点の一覧は
             // 古くなるので、更新の合図を送る（[`crate::EVENT_UPDATED`]）。

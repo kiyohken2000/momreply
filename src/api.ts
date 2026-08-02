@@ -61,6 +61,22 @@ export function listPending(): Promise<Pending[]> {
   return invoke("list_pending");
 }
 
+/** いま裏で何をしているか。していなければ null。 */
+export type Activity = {
+  who: string;
+  phase: "settling" | "generating";
+  /** 画面に出す文言。Rust 側で決めている。 */
+  label: string;
+};
+
+/**
+ * 開いた時点の状態。合図（`momreply://activity`）だけでは、
+ * 開く前に始まった処理を拾えない。
+ */
+export function currentActivity(): Promise<Activity | null> {
+  return invoke("current_activity");
+}
+
 /** 会話の 1 行（古い順に並ぶ）。 */
 export type Turn = { from_me: boolean; body: string; at: number };
 

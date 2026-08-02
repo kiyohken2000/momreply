@@ -12,6 +12,7 @@ import {
   type ProviderChoice,
   type RunMode,
 } from "./api";
+import ActivityBar from "./components/ActivityBar";
 import ApiKeyRow from "./components/ApiKeyRow";
 import SelfProfile from "./components/SelfProfile";
 import Replies from "./components/Replies";
@@ -100,6 +101,9 @@ export default function App() {
           ))}
         </nav>
       </header>
+
+      {/* 裏で動いていることは、どのタブを見ていても分かるようにする。 */}
+      <ActivityBar />
 
       {/* min-h-0 が無いと、中身の高さで main が伸びて
           テキストエリアの flex-1 が効かない。 */}

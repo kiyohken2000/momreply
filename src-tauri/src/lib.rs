@@ -4,6 +4,7 @@
 //! 仕様書 4.1 はこれらを `src-tauri/src/` 配下に置いているが、
 //! CLI と共有するためクレートを分けている。ここは薄いシェルに留める。
 
+mod activity;
 mod commands;
 mod notify;
 mod tray;
@@ -43,6 +44,7 @@ pub fn run() {
             commands::approve_fact,
             commands::reject_fact,
             commands::list_pending,
+            commands::current_activity,
             commands::conversation,
             commands::recent_conversation,
             commands::send_reply,

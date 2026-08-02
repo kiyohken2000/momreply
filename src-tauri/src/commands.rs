@@ -221,6 +221,16 @@ pub fn list_pending() -> Result<Vec<PendingView>, String> {
     Ok(out)
 }
 
+/// いま裏で何をしているか。していなければ `None`。
+///
+/// ポップオーバーを開いた時点の状態を知るために要る。合図
+/// （[`crate::activity::EVENT_ACTIVITY`]）だけでは、開く前に始まった
+/// 処理を拾えない。
+#[tauri::command]
+pub fn current_activity() -> Option<crate::activity::Activity> {
+    crate::activity::current()
+}
+
 /// 会話の 1 行。
 #[derive(Serialize)]
 pub struct Turn {

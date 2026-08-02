@@ -221,9 +221,9 @@ pub fn burst_text(messages: &[Message]) -> String {
 /// 実際に起きた形はこうだった。
 ///
 /// ```text
-/// 13:26:52  相手  あなたの文章全くわからない   ← これで生成を開始
-/// 13:27:04  相手  あなたは、体調が悪い？        ← 生成中に到着
-/// 13:27:10  相手  山木戸？                     ← 生成中に到着
+/// 13:26:52  相手  さっきの件だけど            ← これで生成を開始
+/// 13:27:04  相手  体調は大丈夫なの？           ← 生成中に到着
+/// 13:27:10  相手  それで、どうするの？          ← 生成中に到着
 /// 13:27:49  自分  （1 通目への返信を送信）
 /// 13:27:55        後の 2 件は already_replied で永久にスキップ
 /// ```
@@ -468,23 +468,23 @@ mod tests {
 
     const WINDOW: Duration = Duration::from_secs(300);
 
-    /// 実データにあった形。最後の 1 行だけでは中身が無い。
+    /// 実運用で最初に出た形。最後の 1 行だけでは中身が無い。
     #[test]
     fn consecutive_incoming_messages_become_one() {
         let recent = vec![
-            at(1, true, 0, "来ない"),
+            at(1, true, 0, "行かないよ"),
             at(2, false, 60, "なら、答えて下さい"),
-            at(3, false, 70, "マイナンバーカードについても明確な返信下さい"),
-            at(4, false, 80, "資格確認証は、ありますか？"),
-            at(5, false, 90, "返信なければ行く"),
+            at(3, false, 70, "書類のことも教えてほしい"),
+            at(4, false, 80, "準備はできているの？"),
+            at(5, false, 90, "返事がなければ行きます"),
         ];
         let group = group_burst(&recent, 5, WINDOW);
         assert_eq!(
             group.iter().map(|m| m.rowid).collect::<Vec<_>>(),
             vec![2, 3, 4, 5]
         );
-        assert!(burst_text(&group).contains("資格確認証"));
-        assert!(burst_text(&group).ends_with("返信なければ行く"));
+        assert!(burst_text(&group).contains("書類"));
+        assert!(burst_text(&group).ends_with("返事がなければ行きます"));
     }
 
     /// 自分が返していたら、そこで話は切れている。
@@ -492,10 +492,10 @@ mod tests {
     #[test]
     fn an_own_reply_breaks_the_burst() {
         let recent = vec![
-            at(1, false, 0, "資格証明書はあるの？"),
-            at(2, true, 60, "ある"),
-            at(3, false, 120, "マイナンバーカードは？"),
-            at(4, false, 130, "何故ですか？"),
+            at(1, false, 0, "準備はできているの？"),
+            at(2, true, 60, "できてるよ"),
+            at(3, false, 120, "書類のほうは？"),
+            at(4, false, 130, "どうして？"),
         ];
         let group = group_burst(&recent, 4, WINDOW);
         assert_eq!(group.iter().map(|m| m.rowid).collect::<Vec<_>>(), vec![3, 4]);

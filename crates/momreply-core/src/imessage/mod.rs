@@ -13,4 +13,6 @@ pub use reader::{
     count_own_replies_after, list_chats, max_rowid, messages_after, recent_messages, ChatSummary,
     Message, SkipReason,
 };
-pub use watcher::{gap_detected, is_stale, plan, Passed, Plan};
+pub use watcher::{
+    burst, burst_text, gap_detected, is_stale, plan, plan_with_burst, Passed, Plan, BURST_WINDOW,
+};

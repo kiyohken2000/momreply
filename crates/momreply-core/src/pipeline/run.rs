@@ -270,7 +270,9 @@ fn record(
         message.rowid,
         &message.chat_identifier,
         message.date.timestamp(),
-        message.body.as_deref(),
+        // 連投をまとめたなら、まとめた全文を残す。最後の 1 行だけだと
+        // 「何に返信したのか」が後から分からない。
+        draft.map(|d| d.incoming.as_str()).or(message.body.as_deref()),
         status,
         skip_reason,
         draft.map(|d| d.text.as_str()),

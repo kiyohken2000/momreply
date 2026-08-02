@@ -65,7 +65,7 @@ fn tick(app: &AppHandle, chat_db: &rusqlite::Connection, gap: bool) -> anyhow::R
             continue;
         }
 
-        let plan = imessage::plan(new, gap);
+        let plan = imessage::plan_with_burst(chat_db, &target.handles, new, gap)?;
 
         for (m, reason) in &plan.passed {
             if *reason == imessage::Passed::NotApplicable {

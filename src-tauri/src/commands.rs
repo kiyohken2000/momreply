@@ -666,7 +666,8 @@ fn draft_latest_blocking(slug: &str) -> Result<String, String> {
             message.rowid,
             &message.chat_identifier,
             message.date.timestamp(),
-            message.body.as_deref(),
+            // 連投をまとめたなら、まとめた全文（[`Draft::incoming`]）。
+            Some(draft.incoming.as_str()),
             "awaiting_review",
             Some("manual"),
             Some(&draft.text),

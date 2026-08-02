@@ -15,10 +15,15 @@
 //!
 //! # 選び方（重要）
 //!
-//! 新着が複数あっても**生成対象は最新の 1 件だけ**にする。
-//! 相手は 1 つの用件を数行に分けて送ってくるので、行ごとに返信すると
-//! 会話が壊れる。古い分は `superseded`、時刻ギャップ後なら `stale`
-//! として記録に残す。
+//! 新着が複数あっても**返信するのは 1 回だけ**にする。
+//! 行ごとに返すと会話が壊れる。
+//!
+//! ただし相手は 1 つの用件を数行に分けて送ってくる。最後の 1 行だけを
+//! 見ると、中身がそこに無いことがある（「返信なければ行く」だけが残り、
+//! 実際の問いは前の行にある）。そこで、自分の返信を挟まずに短時間で
+//! 続いた相手のメッセージは、**1 通としてまとめて**生成に渡す
+//! （[`burst`]）。まとめた分は `merged`、追い越された分は `superseded`、
+//! 時刻ギャップ後なら `stale` として記録に残す。
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -27,14 +32,29 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
+use rusqlite::Connection;
 
 use super::Message;
+
+/// 連投とみなす間隔。これより長く空いたら別の話として切る。
+pub const BURST_WINDOW: Duration = Duration::from_secs(5 * 60);
+
+/// 1 通にまとめる上限。
+///
+/// 際限なくまとめると、長い独白がまるごとプロンプトに入って
+/// 生成が壊れる。塊としての意味が残る範囲で切る。
+pub const BURST_MAX: usize = 10;
+
+/// 連投を探すために遡る件数。
+const BURST_LOOKBACK: u32 = 30;
 
 /// 見送った理由。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Passed {
     /// 同じ相手からより新しいメッセージが来ている。
     Superseded,
+    /// 連投の一部として、生成に取り込まれた。**無視されていない。**
+    Merged,
     /// 時刻が飛んだあとに溜まっていた分（仕様書 6.1）。
     Stale,
     /// 自分の送信・タップバックなど、そもそも対象外。
@@ -45,6 +65,7 @@ impl Passed {
     pub fn label(self) -> &'static str {
         match self {
             Passed::Superseded => "superseded",
+            Passed::Merged => "merged",
             Passed::Stale => "stale",
             Passed::NotApplicable => "not_applicable",
         }
@@ -94,6 +115,104 @@ pub fn plan(messages: Vec<Message>, gap_detected: bool) -> Plan {
         passed,
         next_seen_rowid,
     }
+}
+
+/// [`plan`] の結果に、連投のまとめを反映する。
+///
+/// 連投の前半は「より新しいものに追い越された」のではなく、**生成に
+/// 取り込まれる**。理由をそのままにすると、記録を見たときに
+/// 「無視された」と読めてしまう。
+pub fn plan_with_burst(
+    conn: &Connection,
+    handles: &[String],
+    messages: Vec<Message>,
+    gap_detected: bool,
+) -> Result<Plan> {
+    let mut plan = plan(messages, gap_detected);
+
+    let Some(target) = &plan.actionable else {
+        return Ok(plan);
+    };
+    let merged: Vec<i64> = burst(conn, handles, target, BURST_WINDOW)?
+        .iter()
+        .map(|m| m.rowid)
+        .collect();
+
+    for (m, reason) in &mut plan.passed {
+        if *reason != Passed::NotApplicable && merged.contains(&m.rowid) {
+            *reason = Passed::Merged;
+        }
+    }
+    Ok(plan)
+}
+
+/// `target` を末尾とする連投を、古い順に返す。
+///
+/// 単発なら `target` 1 件だけが返る。
+pub fn burst(
+    conn: &Connection,
+    handles: &[String],
+    target: &Message,
+    window: Duration,
+) -> Result<Vec<Message>> {
+    let recent = super::reader::recent_messages(conn, handles, BURST_LOOKBACK)?;
+    Ok(group_burst(&recent, target.rowid, window))
+}
+
+/// 連投のまとめ方（純粋関数）。`recent` は古い順。
+///
+/// `rowid` から遡り、次のいずれかで切る。
+///
+/// - **自分の送信が挟まった** — そこから先は別の話。
+/// - **間隔が `window` を超えた** — 続きではなく新しい用件。
+/// - **`BURST_MAX` 件に達した**。
+///
+/// タップバックなどの対象外メッセージは、塊を割らずに読み飛ばす。
+/// 「👍」が 1 つ挟まっただけで連投が分断されると、まとめる意味が無い。
+pub fn group_burst(recent: &[Message], rowid: i64, window: Duration) -> Vec<Message> {
+    let Some(end) = recent.iter().position(|m| m.rowid == rowid) else {
+        return Vec::new();
+    };
+
+    let mut out = vec![recent[end].clone()];
+    let mut previous = recent[end].date;
+
+    for m in recent[..end].iter().rev() {
+        if out.len() >= BURST_MAX {
+            break;
+        }
+        // 自分が返していたら、そこで話は切れている。
+        if m.is_from_me {
+            break;
+        }
+        if m.skip.is_some() {
+            continue;
+        }
+        match previous.signed_duration_since(m.date).to_std() {
+            Ok(gap) if gap <= window => {}
+            // 空きすぎ、または並びが壊れている。まとめない。
+            _ => break,
+        }
+        previous = m.date;
+        out.push(m.clone());
+    }
+
+    out.reverse();
+    out
+}
+
+/// 連投を 1 通の本文としてつなぐ。
+///
+/// 本文の無いものは落とす。改行で繋ぐのは、相手が実際に
+/// 改行入りの 1 通として送ってくる形と同じにするため。
+pub fn burst_text(messages: &[Message]) -> String {
+    messages
+        .iter()
+        .filter_map(|m| m.body.as_deref())
+        .map(str::trim)
+        .filter(|b| !b.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// 受信からの経過が長いか（仕様書 6.4.2 stale guard）。
@@ -251,6 +370,104 @@ mod tests {
             skip: None,
             body_from_text_column: false,
         }
+    }
+
+    /// 連投の検証用。`at` は基準時刻からの経過秒。
+    fn at(rowid: i64, from_me: bool, secs: i64, body: &str) -> Message {
+        let base = Local.with_ymd_and_hms(2026, 8, 1, 9, 0, 0).unwrap();
+        Message {
+            date: base + chrono::Duration::seconds(secs),
+            body: Some(body.into()),
+            ..msg(rowid, from_me)
+        }
+    }
+
+    const WINDOW: Duration = Duration::from_secs(300);
+
+    /// 実データにあった形。最後の 1 行だけでは中身が無い。
+    #[test]
+    fn consecutive_incoming_messages_become_one() {
+        let recent = vec![
+            at(1, true, 0, "来ない"),
+            at(2, false, 60, "なら、答えて下さい"),
+            at(3, false, 70, "マイナンバーカードについても明確な返信下さい"),
+            at(4, false, 80, "資格確認証は、ありますか？"),
+            at(5, false, 90, "返信なければ行く"),
+        ];
+        let group = group_burst(&recent, 5, WINDOW);
+        assert_eq!(
+            group.iter().map(|m| m.rowid).collect::<Vec<_>>(),
+            vec![2, 3, 4, 5]
+        );
+        assert!(burst_text(&group).contains("資格確認証"));
+        assert!(burst_text(&group).ends_with("返信なければ行く"));
+    }
+
+    /// 自分が返していたら、そこで話は切れている。
+    /// またぐと、返事済みの用件にもう一度返すことになる。
+    #[test]
+    fn an_own_reply_breaks_the_burst() {
+        let recent = vec![
+            at(1, false, 0, "資格証明書はあるの？"),
+            at(2, true, 60, "ある"),
+            at(3, false, 120, "マイナンバーカードは？"),
+            at(4, false, 130, "何故ですか？"),
+        ];
+        let group = group_burst(&recent, 4, WINDOW);
+        assert_eq!(group.iter().map(|m| m.rowid).collect::<Vec<_>>(), vec![3, 4]);
+    }
+
+    /// 間隔が空いていれば別の用件。1 時間前の話まで巻き込まない。
+    #[test]
+    fn a_long_pause_breaks_the_burst() {
+        let recent = vec![
+            at(1, false, 0, "おはよう"),
+            at(2, false, 3600, "ところで"),
+            at(3, false, 3610, "今日来る？"),
+        ];
+        let group = group_burst(&recent, 3, WINDOW);
+        assert_eq!(group.iter().map(|m| m.rowid).collect::<Vec<_>>(), vec![2, 3]);
+    }
+
+    /// 「👍」が 1 つ挟まっただけで分断されると、まとめる意味が無い。
+    #[test]
+    fn a_tapback_does_not_break_the_burst() {
+        let mut tapback = at(2, false, 60, "");
+        tapback.skip = Some(super::super::SkipReason::Tapback);
+        let recent = vec![at(1, false, 0, "答えて"), tapback, at(3, false, 70, "何故？")];
+        let group = group_burst(&recent, 3, WINDOW);
+        assert_eq!(group.iter().map(|m| m.rowid).collect::<Vec<_>>(), vec![1, 3]);
+    }
+
+    #[test]
+    fn a_single_message_is_a_burst_of_one() {
+        let recent = vec![at(1, true, 0, "ある"), at(2, false, 60, "何故ですか？")];
+        let group = group_burst(&recent, 2, WINDOW);
+        assert_eq!(group.len(), 1);
+        assert_eq!(burst_text(&group), "何故ですか？");
+    }
+
+    /// 長い独白がまるごと入ると生成が壊れる。
+    #[test]
+    fn a_burst_is_capped() {
+        let recent: Vec<Message> = (1..=30)
+            .map(|i| at(i, false, i * 10, &format!("行{i}")))
+            .collect();
+        assert_eq!(group_burst(&recent, 30, WINDOW).len(), BURST_MAX);
+    }
+
+    #[test]
+    fn an_unknown_rowid_yields_nothing() {
+        assert!(group_burst(&[at(1, false, 0, "a")], 99, WINDOW).is_empty());
+    }
+
+    /// 本文の無いものが混じっても、区切りが増えたりしない。
+    #[test]
+    fn empty_bodies_do_not_leave_blank_lines() {
+        let mut blank = at(2, false, 10, "   ");
+        blank.body = Some("   ".into());
+        let group = vec![at(1, false, 0, "答えて"), blank, at(3, false, 20, "何故？")];
+        assert_eq!(burst_text(&group), "答えて\n何故？");
     }
 
     /// 相手は 1 つの用件を数行に分けて送る。行ごとに返信すると会話が壊れる。

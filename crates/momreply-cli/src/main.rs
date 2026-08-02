@@ -46,6 +46,16 @@ enum Command {
     /// 返信対象の相手を管理する。
     #[command(subcommand)]
     Target(TargetCmd),
+    /// 連投がどこまで 1 通としてまとめられるかを見る。
+    ///
+    /// 生成も送信もしない。まとめ方の確認だけに使う。
+    Burst {
+        #[arg(long)]
+        slug: String,
+        /// 末尾にする ROWID。省略すると直近の受信。
+        #[arg(long)]
+        rowid: Option<i64>,
+    },
     /// 新着を検知して処理し続ける（仕様書 6.1）。
     ///
     /// 既定はドライラン。実際に送るには --live を明示する。
@@ -192,6 +202,7 @@ async fn main() -> Result<()> {
             include_skipped,
         } => cmd_messages(&chat_db, &handle, limit, include_skipped),
         Command::Target(cmd) => cmd_target(&chat_db, cmd),
+        Command::Burst { slug, rowid } => cmd_burst(&chat_db, &slug, rowid),
         Command::Watch { slug, live, once } => {
             cmd_watch(&chat_db, &chat_db_path, &slug, live, once).await
         }
@@ -328,12 +339,17 @@ async fn cmd_watch(
         let runtime = store.target_runtime(target.id)?;
         let after = runtime.last_seen_rowid.unwrap_or(0);
         let new = imessage::messages_after(chat_db, &target.handles, after)?;
-        let plan = imessage::plan(new, gap);
+        let plan = imessage::plan_with_burst(chat_db, &target.handles, new, gap)?;
 
         for (m, reason) in &plan.passed {
             if *reason != imessage::Passed::NotApplicable {
+                let what = if *reason == imessage::Passed::Merged {
+                    "連投としてまとめた"
+                } else {
+                    "見送り"
+                };
                 println!(
-                    "  見送り #{} ({}) {}",
+                    "  {what} #{} ({}) {}",
                     m.rowid,
                     reason.label(),
                     m.body.as_deref().unwrap_or("").replace('\n', " ")
@@ -543,10 +559,6 @@ async fn cmd_generate(
     };
 
     println!("対象 #{} {}", message.rowid, message.date.format("%m-%d %H:%M"));
-    for line in message.body.as_deref().unwrap_or("").lines() {
-        println!("  {line}");
-    }
-    println!();
 
     let redo = redo.as_deref().map(|instruction| {
         let trimmed = instruction.trim();
@@ -565,6 +577,12 @@ async fn cmd_generate(
         chat_db, &store, &target, &message, preset, redo, pipeline::Urgency::Interactive,
     )
     .await?;
+
+    // 連投をまとめていれば、まとめた全文がこちらに入る。
+    for line in draft.incoming.lines() {
+        println!("  {line}");
+    }
+    println!();
 
     if let Some(reason) = &draft.skipped {
         println!("ガードにより生成しませんでした: {}", reason.label());
@@ -608,13 +626,45 @@ async fn cmd_generate(
         message.rowid,
         &message.chat_identifier,
         message.date.timestamp(),
-        message.body.as_deref(),
+        Some(draft.incoming.as_str()),
         if draft.held_for_review { "awaiting_review" } else { "dry_run" },
         None,
         Some(&draft.text),
         Some(&draft.provider),
         Some(&draft.model),
     )?;
+    Ok(())
+}
+
+/// 連投のまとめ方を確認する。LLM を呼ばない。
+fn cmd_burst(chat_db: &rusqlite::Connection, slug: &str, rowid: Option<i64>) -> Result<()> {
+    let store = Store::open_default()?;
+    let target = store
+        .target_by_slug(slug)?
+        .with_context(|| format!("'{slug}' は登録されていない"))?;
+
+    let recent = imessage::recent_messages(chat_db, &target.handles, 100)?;
+    let last = match rowid {
+        Some(id) => recent
+            .iter()
+            .find(|m| m.rowid == id)
+            .with_context(|| format!("ROWID {id} が直近 100 件に無い"))?,
+        None => recent
+            .iter()
+            .filter(|m| !m.is_from_me && m.skip.is_none())
+            .next_back()
+            .context("受信メッセージが見つからない")?,
+    };
+
+    let group = imessage::burst(chat_db, &target.handles, last, imessage::BURST_WINDOW)?;
+    println!("末尾 #{} からまとめると {} 件:", last.rowid, group.len());
+    for m in &group {
+        println!("  #{} {}", m.rowid, m.date.format("%m-%d %H:%M:%S"));
+    }
+    println!();
+    println!("--- 生成に渡る本文 ---");
+    println!("{}", imessage::burst_text(&group));
+    println!("---");
     Ok(())
 }
 

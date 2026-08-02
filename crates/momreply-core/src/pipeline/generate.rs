@@ -175,6 +175,17 @@ pub async fn draft_reply(
         });
     }
 
+    // 相手が数行に分けて送ってきた分を 1 通にまとめる。
+    //
+    // 最後の 1 行だけを見ると中身が無いことがある。「返信なければ行く」
+    // だけが残り、実際の問いは前の行にある、という形が実データに出る。
+    let group = imessage::burst(chat_db, &target.handles, message, imessage::BURST_WINDOW)?;
+    let incoming = if group.len() > 1 {
+        imessage::burst_text(&group)
+    } else {
+        incoming
+    };
+
     // 質問は「質問が来ている」と伝えるためだけに取り出す。
     // 答えさせないので、答えられるかどうかの判定はしない。
     let found = questions::extract(&incoming);
@@ -185,10 +196,12 @@ pub async fn draft_reply(
         .filter(|m| !m.trim().is_empty())
         .unwrap_or_else(|| provider.default_model().to_string());
 
+    // まとめた分を履歴にも出すと、同じ文が 2 回入って重みが狂う。
+    let in_group: Vec<i64> = group.iter().map(|m| m.rowid).collect();
     let recent: Vec<(bool, String)> =
         imessage::recent_messages(chat_db, &target.handles, 20)?
             .into_iter()
-            .filter(|m| m.skip.is_none() && m.rowid != message.rowid)
+            .filter(|m| m.skip.is_none() && !in_group.contains(&m.rowid))
             .filter_map(|m| m.body.map(|b| (m.is_from_me, b)))
             .collect();
 

@@ -2,79 +2,23 @@
 //!
 //! 仕様書 8.1 のシステムプロンプトを土台にしつつ、2 点変えている。
 //!
-//! 1. **「確信のない事実は曖昧に返す」を、そのままにしない。**
-//!    仕様書は「曖昧なら『確認してみる』と返す」としているが、
-//!    質問に答えることが目的のこのアプリでは、はぐらかしは失敗である。
-//!    答える材料が無い質問はそもそも生成に回さず人間に聞く
-//!    （[`crate::questions`] と `pending_questions`）。ここまで来た質問は
-//!    材料があるものなので、**はっきり答えさせる。**
+//! 1. **質問に具体的な答えを出させない。**
+//!    仕様書は「答えるための材料」を用意して答えさせる前提だったが、
+//!    それは材料が足りないたびに人へ確認が飛ぶということでもある。
+//!    このアプリの目的は放置できることなので、確定させない返し方に倒す。
+//!    誤った事実を自動送信する危険も、言い切らないぶん小さくなる。
 //!
 //! 2. **文体と内容の出どころを分ける。**
-//!    few-shot は話し方の手本であって、答えの根拠ではない。
+//!    few-shot は話し方の手本であって、書く内容の根拠ではない。
 //!    過去に短く突き放していれば few-shot はそれを再生産する。
-//!    何を答えるかは `self.md` と定型回答から取る、と明示する。
+//!
+//! # `self.md` の位置づけ
+//!
+//! 事実の一覧ではなく、**書き方の方向性を指示する場所**として扱う。
+//! 「デスマス調にしない」のような指示を書けば、文例よりそちらが優先される。
+//! 事実が書いてあれば、それはそのまま使ってよい材料になる。
 
 use crate::{fewshot::Pair, llm::ChatMessage, questions::Question};
-
-/// 材料が足りないことをモデルに知らせてもらうための合図。
-///
-/// 答えられるかどうかは `self.md` を見ないと決まらない。それを持って
-/// いるのはモデルなので、判定もモデルにさせる。別途 LLM に問い合わせる
-/// より呼び出しが 1 回で済む。
-///
-/// 通常の日本語には現れない形にして、本文に紛れても検出できるようにする。
-pub const NEED_INFO: &str = "[[NEED_INFO]]";
-
-/// 生成結果が「材料不足」の合図かどうか。
-///
-/// 前後に説明を付けてくることがあるので、含まれていれば合図とみなす。
-pub fn is_need_info(text: &str) -> bool {
-    text.contains(NEED_INFO)
-}
-
-/// 合図を取り除いた本文。
-///
-/// 答えられる分だけ書かれていることがある。全部捨てると、
-/// 送れたはずの内容まで失う。**合図が本文に残ると相手に届くので、
-/// ここで必ず落とす。**
-pub fn strip_need_info(text: &str) -> String {
-    text.replace(NEED_INFO, "")
-        .lines()
-        .map(str::trim_end)
-        .collect::<Vec<_>>()
-        .join("\n")
-        .trim()
-        .to_string()
-}
-
-/// 返信の方針。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReplyMode {
-    /// 質問に具体的に答える。材料が無ければ人に聞く。
-    Precise,
-    /// 明確な回答を避け、当たり障りのない長文で返す。
-    ///
-    /// 人に一切聞かないので放置できる。断定しないぶん、誤った事実を
-    /// 送ってしまう危険は `Precise` より小さい。
-    /// 代わりに、相手が求めている答えは得られない。
-    Vague,
-}
-
-impl ReplyMode {
-    pub fn parse(s: &str) -> Self {
-        match s {
-            "vague" => Self::Vague,
-            _ => Self::Precise,
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Precise => "precise",
-            Self::Vague => "vague",
-        }
-    }
-}
 
 /// 生成に必要な材料。
 pub struct Context {
@@ -82,7 +26,7 @@ pub struct Context {
     pub display_name: String,
     /// 自分の名前。プロンプトで「本人になりきる」ために使う。
     pub user_name: String,
-    /// `self.md` 全文。**AI が断定してよい唯一の材料。**
+    /// `self.md` 全文。**書き方の指示と、言い切ってよい事実。**
     pub self_profile: String,
     /// 相手プロファイル全文。
     pub target_profile: String,
@@ -94,36 +38,12 @@ pub struct Context {
     pub incoming: String,
     /// 今回のメッセージから取り出した質問。
     pub questions: Vec<Question>,
-    /// 質問への対応が決まっているもの。
-    pub known_answers: Vec<KnownAnswer>,
     /// 現在日時の表示。
     pub now: String,
     /// 長さの指示（仕様書 6.9.3）。
     pub length_instruction: String,
     /// 再生成のときだけ入る（仕様書 8.3）。
     pub retry: Option<Retry>,
-    pub mode: ReplyMode,
-}
-
-/// 質問への対応。
-#[derive(Debug, Clone)]
-pub struct KnownAnswer {
-    pub question: String,
-    pub stance: Stance,
-}
-
-/// どう答えるか。
-///
-/// **事実と指示を混ぜてはいけない。** 「ごまかす」を答えとして渡すと、
-/// モデルはその 3 文字をそのまま送信文にする。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Stance {
-    /// 確認済みの事実。そのまま使わせる。
-    Fact(String),
-    /// はっきり答えず濁す。
-    Deflect,
-    /// 触れない。
-    Ignore,
 }
 
 /// やり直しの指示。
@@ -153,57 +73,36 @@ pub fn system(ctx: &Context) -> String {
     );
 
     // ここがこのアプリの肝。仕様書 8.1 から意図的に変えている箇所。
-    match ctx.mode {
-        ReplyMode::Precise => s.push_str(&format!(
-            "# 質問には必ず答える\n\
-             相手の質問をはぐらかさない。「確認してみる」「また連絡する」で\n\
-             済ませない。答えは下の『答えるための材料』に書いてある。\n\
-             材料に書いてあることは、迷わず言い切る。\n\n\
-             # 材料が足りないとき\n\
-             質問に答えるための材料が下に無い場合は、**推測で書かない。**\n\
-             代わりに次のようにする。\n\
-             \n\
-             - 答えられる質問が 1 つでもあるなら、**その分は普通に答える。**\n\
-               そのうえで、最後の行に {NEED_INFO} を置く\n\
-             - 1 つも答えられないなら、{NEED_INFO} とだけ出力する\n\
-             \n\
-             この記号は人間への合図で、相手には送られない。\n\
-             答えられる部分まで捨てる必要はない。\n\
-             材料がそろっている質問だけの場合は、この記号を使わない。\n\n"
-        )),
-
-        // 人に聞かずに済ませるための指示。断定させないことで、
-        // 誤った事実を自動送信する危険を下げている。
-        ReplyMode::Vague => s.push_str(
-            "# 答え方（重要）\n\
-             質問されても、**具体的な答えを出さない。**\n\
-             ただし、そっけなくしない。相手の話をちゃんと受け止めて、\n\
-             たっぷり書く。読んで冷たく感じない文にすること。\n\
-             \n\
-             守ること:\n\
-             - 日付・時刻・金額・可否を確定させない\n\
-             - 約束をしない。「行く」「行かない」「やる」と言い切らない\n\
-             - 断ることも承諾することもしない\n\
-             - 『答えるための材料』に書いてあることだけは、そのまま言ってよい\n\
-             - 書いていないことは作らない。知らないことは触れない\n\
-             \n\
-             やること:\n\
-             - 相手が書いてきた話題に触れて、受け止めたと分かるようにする\n\
-               （ただし内容の是非は判断しない）\n\
-             - 近況めいた話、体調を気づかう言葉、当たり障りのない話を混ぜる\n\
-             - 相手が続きを書きやすいように、軽い問いかけで終えてもよい\n\
-             \n\
-             人間に確認を求めてはいけない。合図は使わない。\n\
-             どんな内容でも、この方針で返信を書ききること。\n\n",
-        ),
-    }
+    // 人に聞かずに済ませるための指示。断定させないことで、
+    // 誤った事実を自動送信する危険を下げている。
+    s.push_str(
+        "# 答え方（重要）\n\
+         質問されても、**具体的な答えを出さない。**\n\
+         ただし、そっけなくしない。相手の話をちゃんと受け止めて、\n\
+         たっぷり書く。読んで冷たく感じない文にすること。\n\
+         \n\
+         守ること:\n\
+         - 日付・時刻・金額・可否を確定させない\n\
+         - 約束をしない。「行く」「行かない」「やる」と言い切らない\n\
+         - 断ることも承諾することもしない\n\
+         - 『自分についてのメモ』に書いてあることだけは、そのまま言ってよい\n\
+         - 書いていないことは作らない。知らないことは触れない\n\
+         \n\
+         やること:\n\
+         - 相手が書いてきた話題に触れて、受け止めたと分かるようにする\n\
+           （ただし内容の是非は判断しない）\n\
+         - 近況めいた話、体調を気づかう言葉、当たり障りのない話を混ぜる\n\
+         - 相手が続きを書きやすいように、軽い問いかけで終えてもよい\n\
+         \n\
+         人間に確認を求めてはいけない。\n\
+         どんな内容でも、この方針で返信を書ききること。\n\n",
+    );
 
     s.push_str(
         "# 文体と内容の使い分け（重要）\n\
-         文例は「話し方」の手本であって、「何を答えるか」の手本ではない。\n\
+         文例は「話し方」の手本であって、「何を書くか」の手本ではない。\n\
          語尾・句読点・絵文字の使い方だけを文例から借りること。\n\
-         答えの中身は必ず『答えるための材料』から取る。\n\
-         文例に短い返事が並んでいても、質問に答える必要があるなら答える。\n\n",
+         文例に短い返事が並んでいても、長さの指示のほうを優先する。\n\n",
     );
 
     s.push_str(&format!("# 返信の長さ\n{}\n", ctx.length_instruction));
@@ -212,33 +111,17 @@ pub fn system(ctx: &Context) -> String {
          長く書く場合も、文例と同じくだけた話し言葉のまま書くこと。\n\n",
     );
 
-    s.push_str("# 答えるための材料（自分について）\n");
+    // 事実と指示が混ざって書かれる前提で読ませる。どちらなのかを
+    // 人に仕分けさせると、結局「いちいち書く」手間に戻ってしまう。
+    s.push_str(
+        "# 自分についてのメモ\n\
+         書き方の指示と、言い切ってよい事実が混ざって書かれている。\n\
+         - 書き方の指示（例:「デスマス調にしない」）があれば、**文例より優先して従う**\n\
+         - 事実が書いてあれば、それはそのまま言ってよい\n\
+         - ここに無いことは作らない\n\n",
+    );
     s.push_str(trimmed_or(&ctx.self_profile, "（未設定）"));
     s.push_str("\n\n");
-
-    if !ctx.known_answers.is_empty() {
-        s.push_str("# 今回の質問への対応\n");
-        for ka in &ctx.known_answers {
-            match &ka.stance {
-                Stance::Fact(answer) => s.push_str(&format!(
-                    "- 「{}」→ {answer}（本人が確認済みの事実。これをそのまま使う）\n",
-                    ka.question
-                )),
-                // 指示であって答えではない。この文言自体を送信文にしないこと。
-                Stance::Deflect => s.push_str(&format!(
-                    "- 「{}」→ はっきり答えず、言葉を濁して受け流す。\
-                       断定も約束もしない（指示。この文をそのまま書かない）\n",
-                    ka.question
-                )),
-                Stance::Ignore => s.push_str(&format!(
-                    "- 「{}」→ この質問には触れない。他の話題だけで返す\
-                       （指示。この文をそのまま書かない）\n",
-                    ka.question
-                )),
-            }
-        }
-        s.push_str("対応が決まっている質問については、材料不足とみなさないこと。\n\n");
-    }
 
     s.push_str(&format!("# {}について\n", ctx.display_name));
     s.push_str(trimmed_or(&ctx.target_profile, "（未設定）"));
@@ -298,30 +181,16 @@ fn retry_turn(retry: &Retry) -> String {
 
 /// 最後の user メッセージ。
 ///
-/// 質問と長さ指示をここで再掲する。**末尾の指示のほうが効きやすい**ため
+/// 方針と長さ指示をここで再掲する。**末尾の指示のほうが効きやすい**ため
 /// （仕様書 6.9.4-3）。few-shot に短い返信が並ぶと、system 側の指示は
 /// 押し負ける。
 fn final_turn(ctx: &Context) -> String {
     let mut s = format!("<{}> {}", ctx.display_name, ctx.incoming);
 
+    // 質問があることは伝えるが、答えさせない。
     if !ctx.questions.is_empty() {
-        match ctx.mode {
-            ReplyMode::Precise => {
-                s.push_str("\n\n（この中の質問に必ず答えること:");
-                for q in &ctx.questions {
-                    s.push_str(&format!("\n・{}", q.text));
-                }
-                s.push_str(&format!(
-                    "\n材料が無くて答えられない場合は {NEED_INFO} とだけ出力する）"
-                ));
-            }
-            // 質問があることは伝えるが、答えさせない。
-            // 末尾の指示のほうが効くので、ここでも方針を繰り返す。
-            ReplyMode::Vague => {
-                s.push_str("\n\n（質問が含まれているが、確定的な答えは出さないこと。");
-                s.push_str("受け止めたことは伝えつつ、日付・可否・約束は避ける）");
-            }
-        }
+        s.push_str("\n\n（質問が含まれているが、確定的な答えは出さないこと。");
+        s.push_str("受け止めたことは伝えつつ、日付・可否・約束は避ける）");
     }
 
     s.push_str(&format!("\n\n（{}）", ctx.length_instruction));
@@ -344,7 +213,7 @@ mod tests {
         Context {
             display_name: "母".into(),
             user_name: "自分".into(),
-            self_profile: "## 事実\n- 保険証: 持っている".into(),
+            self_profile: "- デスマス調にしない\n- 保険証: 持っている".into(),
             target_profile: "## 基本\n- 呼び方: お母さん".into(),
             fewshot: vec![Pair {
                 incoming: "ごはん食べた？".into(),
@@ -357,70 +226,59 @@ mod tests {
                 text: "保険証はある？".into(),
                 context: None,
             }],
-            known_answers: vec![KnownAnswer {
-                question: "保険証はある？".into(),
-                stance: Stance::Fact("持っている".into()),
-            }],
             now: "2026年8月1日(土) 20:00".into(),
             length_instruction: "母のメッセージと同じくらいの長さで返す。".into(),
             retry: None,
-            mode: ReplyMode::Precise,
         }
     }
 
-    fn vague_ctx() -> Context {
-        Context {
-            mode: ReplyMode::Vague,
-            ..ctx()
-        }
-    }
-
-    /// はぐらかしを許すと、質問に答えるという目的が達成できない。
+    /// 放置できることが目的なので、人への確認を求めさせない。
     #[test]
-    fn the_prompt_forbids_deflection() {
+    fn the_prompt_never_asks_the_human() {
         let s = system(&ctx());
-        assert!(s.contains("はぐらかさない"));
-        assert!(s.contains("確認してみる"));
-        assert!(s.contains("言い切る"));
+        assert!(s.contains("人間に確認を求めてはいけない"));
     }
 
-    /// few-shot が答えの根拠にされると、過去の突き放した返しを再生産する。
+    /// 曖昧に返すのは、確定させないため。ここが緩むと意味が無い。
+    #[test]
+    fn the_prompt_forbids_commitments() {
+        let s = system(&ctx());
+        assert!(s.contains("具体的な答えを出さない"));
+        assert!(s.contains("約束をしない"));
+        assert!(s.contains("日付・時刻・金額・可否を確定させない"));
+    }
+
+    /// そっけない一言は、実データ上いちばん事態を悪くしていた形。
+    #[test]
+    fn the_prompt_requires_warmth_and_length() {
+        let s = system(&ctx());
+        assert!(s.contains("そっけなくしない"));
+        assert!(s.contains("たっぷり書く"));
+    }
+
+    /// 曖昧でも、作り話をしてよいわけではない。
+    #[test]
+    fn the_prompt_forbids_invention() {
+        let s = system(&ctx());
+        assert!(s.contains("書いていないことは作らない"));
+    }
+
+    /// few-shot が内容の根拠にされると、過去の突き放した返しを再生産する。
     #[test]
     fn the_prompt_separates_style_from_content() {
         let s = system(&ctx());
         assert!(s.contains("話し方"));
-        assert!(s.contains("答えの中身は必ず『答えるための材料』から取る"));
+        assert!(s.contains("長さの指示のほうを優先する"));
     }
 
+    /// self.md は事実の置き場であると同時に、書き方の指示の置き場である。
+    /// 指示が文例に負けると、「デスマス調にしない」と書いても効かない。
     #[test]
-    fn known_answers_are_shown_verbatim() {
+    fn the_self_note_overrides_the_style_examples() {
         let s = system(&ctx());
-        assert!(s.contains("「保険証はある？」→ 持っている"));
-    }
-
-    /// 「ごまかす」を答えとして渡すと、その 3 文字がそのまま送信される。
-    /// 指示であることを明示し、書き写さないよう伝えること。
-    #[test]
-    fn a_stance_is_rendered_as_an_instruction_not_an_answer() {
-        let mut c = ctx();
-        c.known_answers = vec![KnownAnswer {
-            question: "何故ですか？".into(),
-            stance: Stance::Deflect,
-        }];
-        let s = system(&c);
-        assert!(s.contains("言葉を濁して"));
-        assert!(s.contains("この文をそのまま書かない"));
-    }
-
-    /// 対応が決まっているなら材料不足ではない。合図を返させない。
-    #[test]
-    fn a_decided_stance_is_not_missing_material() {
-        let mut c = ctx();
-        c.known_answers = vec![KnownAnswer {
-            question: "何故ですか？".into(),
-            stance: Stance::Ignore,
-        }];
-        assert!(system(&c).contains("材料不足とみなさないこと"));
+        assert!(s.contains("書き方の指示"));
+        assert!(s.contains("文例より優先して従う"));
+        assert!(s.contains("デスマス調にしない"));
     }
 
     #[test]
@@ -449,96 +307,18 @@ mod tests {
 
     /// 末尾に再掲しないと few-shot の短さに押し負ける（仕様書 6.9.4-3）。
     #[test]
-    fn the_last_turn_repeats_the_questions_and_length() {
+    fn the_last_turn_repeats_the_stance_and_length() {
         let last = final_turn(&ctx());
         assert!(last.contains("保険証はある？"));
-        assert!(last.contains("必ず答えること"));
+        assert!(last.contains("確定的な答えは出さないこと"));
         assert!(last.contains("同じくらいの長さ"));
-    }
-
-    // MARK: おまかせモード
-
-    /// 放置できることが目的なので、人への確認を求めさせない。
-    #[test]
-    fn vague_mode_never_asks_the_human() {
-        let s = system(&vague_ctx());
-        assert!(!s.contains(NEED_INFO));
-        assert!(s.contains("人間に確認を求めてはいけない"));
-        assert!(!final_turn(&vague_ctx()).contains(NEED_INFO));
-    }
-
-    /// 曖昧に返すのは、確定させないため。ここが緩むと意味が無い。
-    #[test]
-    fn vague_mode_forbids_commitments() {
-        let s = system(&vague_ctx());
-        assert!(s.contains("具体的な答えを出さない"));
-        assert!(s.contains("約束をしない"));
-        assert!(s.contains("日付・時刻・金額・可否を確定させない"));
-    }
-
-    /// そっけない一言は、実データ上いちばん事態を悪くしていた形。
-    #[test]
-    fn vague_mode_still_requires_warmth_and_length() {
-        let s = system(&vague_ctx());
-        assert!(s.contains("そっけなくしない"));
-        assert!(s.contains("たっぷり書く"));
-    }
-
-    /// 曖昧でも、作り話をしてよいわけではない。
-    #[test]
-    fn vague_mode_still_forbids_invention() {
-        let s = system(&vague_ctx());
-        assert!(s.contains("書いていないことは作らない"));
-    }
-
-    /// 材料が無いときは推測させず、合図を返させる。
-    #[test]
-    fn the_prompt_asks_for_a_signal_when_material_is_missing() {
-        let s = system(&ctx());
-        assert!(s.contains(NEED_INFO));
-        assert!(s.contains("推測で書かない"));
-        // 末尾にも再掲する。system 側の指示は few-shot に押し負ける。
-        assert!(final_turn(&ctx()).contains(NEED_INFO));
-    }
-
-    #[test]
-    fn the_signal_is_detected_even_with_surrounding_text() {
-        assert!(is_need_info(NEED_INFO));
-        assert!(is_need_info(&format!("すみません {NEED_INFO}")));
-        assert!(!is_need_info("わかった、明日行くね"));
-        assert!(!is_need_info(""));
-    }
-
-    /// 答えられた分は残す。全部捨てると、送れたはずの内容まで失う。
-    #[test]
-    fn a_partial_answer_survives_the_signal() {
-        let raw = format!("資格証明書はあるよ\n{NEED_INFO}");
-        assert_eq!(strip_need_info(&raw), "資格証明書はあるよ");
-    }
-
-    /// 合図が本文に残ると、そのまま相手に届く。必ず落とす。
-    #[test]
-    fn the_signal_never_survives_into_the_body() {
-        for raw in [
-            NEED_INFO.to_string(),
-            format!("{NEED_INFO}\n答えられません"),
-            format!("前half {NEED_INFO} 後half"),
-        ] {
-            assert!(!strip_need_info(&raw).contains(NEED_INFO), "{raw}");
-        }
-    }
-
-    #[test]
-    fn a_signal_only_response_leaves_no_text() {
-        assert_eq!(strip_need_info(NEED_INFO), "");
-        assert_eq!(strip_need_info(&format!("  {NEED_INFO}  ")), "");
     }
 
     #[test]
     fn a_message_without_questions_has_no_question_block() {
         let mut c = ctx();
         c.questions.clear();
-        assert!(!final_turn(&c).contains("必ず答えること"));
+        assert!(!final_turn(&c).contains("確定的な答えは出さないこと"));
     }
 
     // MARK: 再生成（仕様書 8.3）

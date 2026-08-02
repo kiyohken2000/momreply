@@ -2,21 +2,17 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   listPending,
   regenerate,
-  resolveQuestion,
   sendReply,
   skipPending,
   LENGTH_PRESETS,
-  STANCES,
   type Pending,
-  type Stance,
 } from "../api";
 
 /** 実行中の操作。何が起きているか分からない時間を作らないために持つ。 */
-type Busy = null | "regen" | "send" | "skip" | "answer";
+type Busy = null | "regen" | "send" | "skip";
 
 const BUSY_LABEL: Record<Exclude<Busy, null>, string> = {
   regen: "返信案を生成しています…",
-  answer: "答えを保存して生成しています…",
   send: "送信して結果を確認しています…",
   skip: "処理しています…",
 };
@@ -94,8 +90,7 @@ export default function Replies() {
     );
   }
 
-  const needsAnswer = current.questions.length > 0;
-  const generating = busy === "regen" || busy === "answer";
+  const generating = busy === "regen";
 
   return (
     <div className="flex h-full flex-col">
@@ -138,25 +133,6 @@ export default function Replies() {
           {current.reason && ` ・ ${current.reason}`}
         </div>
 
-        {needsAnswer && (
-          <div className="mt-2 rounded border border-amber-300 bg-amber-50 p-2 dark:border-amber-700 dark:bg-amber-950/40">
-            <p className="mb-1 text-xs font-medium">答える材料がありません</p>
-            {current.questions.map((q) => (
-              <QuestionAnswer
-                key={q.id}
-                question={q.question}
-                disabled={busy !== null}
-                onResolve={(stance, answer) =>
-                  run("answer", async () => {
-                    await resolveQuestion(q.id, stance, answer);
-                    await regenerate(current.chat_rowid, null, null);
-                    await load();
-                  })
-                }
-              />
-            ))}
-          </div>
-        )}
       </div>
 
       {/* ここから下は常に見える。書きかけの返信が隠れないようにする。 */}
@@ -167,7 +143,7 @@ export default function Replies() {
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             disabled={busy !== null}
-            placeholder={needsAnswer ? "上の質問に答えると案が作られます" : "返信案"}
+            placeholder="返信案"
             onKeyDown={(e) => {
               if (e.key === "Enter" && e.metaKey && draft.trim()) {
                 e.preventDefault();
@@ -282,59 +258,5 @@ function Spinner({ light = false }: { light?: boolean }) {
         (light ? "border-white" : "border-neutral-400")
       }
     />
-  );
-}
-
-function QuestionAnswer({
-  question,
-  disabled,
-  onResolve,
-}: {
-  question: string;
-  disabled: boolean;
-  onResolve: (stance: Stance, answer: string | null) => void;
-}) {
-  const [answer, setAnswer] = useState("");
-  return (
-    <div className="mb-2 last:mb-0">
-      <div className="text-[11px]">{question}</div>
-      <input
-        type="text"
-        value={answer}
-        onChange={(e) => setAnswer(e.target.value)}
-        disabled={disabled}
-        placeholder="答え（「答える」を押すときだけ必要）"
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && answer.trim()) {
-            e.preventDefault();
-            onResolve("fact", answer.trim());
-          }
-        }}
-        className="mt-1 w-full rounded border border-neutral-300 px-2 py-0.5 text-[11px] disabled:opacity-50 dark:border-neutral-600 dark:bg-neutral-800"
-      />
-      <div className="mt-1 flex flex-wrap gap-1">
-        {STANCES.map((st) => (
-          <button
-            key={st.id}
-            type="button"
-            title={st.hint}
-            // 「答える」だけは入力が要る。ほかは押すだけで決まる。
-            disabled={disabled || (st.id === "fact" && !answer.trim())}
-            onClick={() => onResolve(st.id, st.id === "fact" ? answer.trim() : null)}
-            className={
-              "rounded px-2 py-0.5 text-[11px] disabled:opacity-40 " +
-              (st.id === "fact"
-                ? "bg-blue-600 text-white"
-                : "border border-neutral-300 dark:border-neutral-600")
-            }
-          >
-            {st.label}
-          </button>
-        ))}
-      </div>
-      <p className="mt-0.5 text-[10px] text-neutral-400">
-        「ごまかす」「触れない」は self.md に保存されません。
-      </p>
-    </div>
   );
 }

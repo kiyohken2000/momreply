@@ -13,7 +13,18 @@ use crate::{
     store::{Store, Target},
 };
 
-/// 長さプリセット（仕様書 6.9.1）。
+/// 目標文字数の下限・上限。
+///
+/// 極端な値を入れられると、暴走検知の閾値ごと壊れる。UI 側でも弾くが、
+/// 保存済みの値がここを通るので、読み出し側でも必ず丸める。
+pub const MIN_TARGET_CHARS: u32 = 10;
+pub const MAX_TARGET_CHARS: u32 = 2000;
+
+/// 長さの指定（仕様書 6.9.1）。
+///
+/// プリセットは「だいたいこのくらい」を一発で選ぶためのもの。
+/// [`LengthPreset::Chars`] は目標文字数を数値で指定したときの形で、
+/// 選ばれていればプリセットより優先される。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LengthPreset {
     Mirror,
@@ -21,10 +32,20 @@ pub enum LengthPreset {
     Normal,
     Long,
     VeryLong,
+    /// 目標文字数を直接指定する。
+    Chars(u32),
 }
 
 impl LengthPreset {
+    /// `targets.reply_preset` の文字列から読む。
+    ///
+    /// 数値指定は `chars:400` の形で入る。列を増やさずに済み、
+    /// プリセットと同じ 1 つの設定として扱える。
     pub fn parse(s: &str) -> Option<Self> {
+        if let Some(n) = s.strip_prefix("chars:") {
+            let n: u32 = n.trim().parse().ok()?;
+            return Some(Self::Chars(n.clamp(MIN_TARGET_CHARS, MAX_TARGET_CHARS)));
+        }
         match s {
             "mirror" => Some(Self::Mirror),
             "short" => Some(Self::Short),
@@ -43,6 +64,9 @@ impl LengthPreset {
             Self::Normal => 300,
             Self::Long => 800,
             Self::VeryLong => 2000,
+            // 目標ちょうどには収まらない。閾値は暴走の検知が目的なので、
+            // 狭く取ると普通の生成が確認送りになって手間が増える。
+            Self::Chars(n) => (n as usize * 2).max(200),
         }
     }
 
@@ -52,19 +76,29 @@ impl LengthPreset {
         (self.hard_max_length() as u32) * 3 + 256
     }
 
-    pub fn instruction(self) -> &'static str {
+    pub fn instruction(self) -> String {
         match self {
-            Self::Mirror => "相手のメッセージと同じくらいの長さで返す。相手が一言なら一言で返す。",
-            Self::Short => "10〜40文字程度。1文で簡潔に。",
-            Self::Normal => "30〜100文字程度。1〜2文。",
-            Self::Long => {
-                "200〜400文字程度。近況や感想を具体的に添えて、3〜5文程度で書く。\
-                 ただし文体は文例のまま崩さないこと。"
+            Self::Mirror => {
+                "相手のメッセージと同じくらいの長さで返す。相手が一言なら一言で返す。".into()
             }
-            Self::VeryLong => {
-                "600〜1200文字程度。近況、感想、質問などを織り交ぜてたっぷり書く。\
+            Self::Short => "10〜40文字程度。1文で簡潔に。".into(),
+            Self::Normal => "30〜100文字程度。1〜2文。".into(),
+            Self::Long => "200〜400文字程度。近況や感想を具体的に添えて、3〜5文程度で書く。\
+                 ただし文体は文例のまま崩さないこと。"
+                .into(),
+            Self::VeryLong => "600〜1200文字程度。近況、感想、質問などを織り交ぜてたっぷり書く。\
                  改行を使って読みやすくする。ただし文体・語尾・絵文字の使い方は\
                  文例のまま崩さないこと。丁寧語やビジネス文体に寄せてはいけない。"
+                .into(),
+            // 幅を持たせないと、字数合わせのために不自然な言い回しが増える。
+            Self::Chars(n) => {
+                let low = (n as f32 * 0.8).round() as u32;
+                let high = (n as f32 * 1.2).round() as u32;
+                format!(
+                    "{low}〜{high}文字程度（目安 {n} 文字）で書く。\
+                     文字数に合わせるために、丁寧語やビジネス文体へ寄せてはいけない。\
+                     文体・語尾・絵文字の使い方は文例のまま崩さないこと。"
+                )
             }
         }
     }
@@ -81,8 +115,6 @@ pub struct Draft {
     pub latency_ms: u64,
     /// 上限超過で確認に倒れたか（仕様書 6.2.1-5）。
     pub held_for_review: bool,
-    /// 答える材料が無かった質問。空でなければ生成せず人間に聞く。
-    pub unanswerable: Vec<String>,
     /// ガードで止まった場合の理由（仕様書 6.4）。生成していない。
     pub skipped: Option<guards::SkipReason>,
 }
@@ -139,41 +171,13 @@ pub async fn draft_reply(
             output_tokens: None,
             latency_ms: 0,
             held_for_review: false,
-            unanswerable: Vec::new(),
             skipped: Some(guards::SkipReason::AlreadyReplied),
         });
     }
 
-    // 質問を取り出し、はっきり答えが決まっているものを拾う。
-    //
-    // **ここで答えられないと決めつけない。** 答えの材料は self.md にも
-    // あり、それを持っているのはモデルである。判定はモデルにさせ、
-    // 足りなければ合図（[`prompt::NEED_INFO`]）を返してもらう。
-    // 事前に弾くと、self.md に書いた事実が一切使われない。
+    // 質問は「質問が来ている」と伝えるためだけに取り出す。
+    // 答えさせないので、答えられるかどうかの判定はしない。
     let found = questions::extract(&incoming);
-    let mut known_answers = Vec::new();
-
-    for q in &found {
-        // 「ごまかす」「触れない」は事実ではないので、答えとして渡さず
-        // 指示として渡す。混ぜるとその文言がそのまま送信される。
-        if let Some((answer, stance)) = store.known_answer(target.id, &q.text)? {
-            known_answers.push(prompt::KnownAnswer {
-                question: q.text.clone(),
-                stance: match stance.as_str() {
-                    "deflect" => prompt::Stance::Deflect,
-                    "ignore" => prompt::Stance::Ignore,
-                    _ => prompt::Stance::Fact(answer.unwrap_or_default()),
-                },
-            });
-            continue;
-        }
-        if let Some(standing) = store.standing_answer(target.id, q.kind())? {
-            known_answers.push(prompt::KnownAnswer {
-                question: q.text.clone(),
-                stance: prompt::Stance::Fact(standing.answer),
-            });
-        }
-    }
 
     let provider = primary_provider(store)?;
     let model = store
@@ -197,7 +201,6 @@ pub async fn draft_reply(
         None => None,
     };
     let kind = if retry.is_some() { "regenerate" } else { "initial" };
-    let mode = prompt::ReplyMode::parse(&target.reply_mode);
 
     let ctx = prompt::Context {
         display_name: target.display_name.clone(),
@@ -209,12 +212,10 @@ pub async fn draft_reply(
         fewshot: store.fewshot(target.id)?,
         recent,
         incoming: incoming.clone(),
-        questions: found.clone(),
-        known_answers,
+        questions: found,
         now: chrono::Local::now().format("%Y年%-m月%-d日(%a) %H:%M").to_string(),
-        length_instruction: preset.instruction().to_string(),
+        length_instruction: preset.instruction(),
         retry,
-        mode,
     };
 
     let llm = llm::build(provider, Some(model.clone())).map_err(anyhow::Error::from)?;
@@ -245,43 +246,7 @@ pub async fn draft_reply(
         error: None,
     })?;
 
-    // おまかせモードでは人に聞かない。合図が出ても本文だけ使う。
-    // 放置できることが目的なので、ここで止めては意味がない。
-    if mode == prompt::ReplyMode::Vague && prompt::is_need_info(&response.text) {
-        eprintln!("警告: おまかせモードなのに材料不足の合図が返った。合図を落として続行する");
-    }
-
-    // モデルが「材料が足りない」と言ってきた場合。
-    //
-    // 答えられる分だけ書かれていることがある。その場合は本文を残して
-    // 確認に回す。人は足りない部分を書き足すだけで済み、答えられた
-    // ところまで捨てずに済む。**自動送信はしない。**
-    if mode == prompt::ReplyMode::Precise && prompt::is_need_info(&response.text) {
-        store.record_questions(target.id, message.rowid, &found)?;
-        let partial = prompt::strip_need_info(&response.text);
-        let asked: Vec<String> = found.iter().map(|q| q.text.clone()).collect();
-        return Ok(Draft {
-            chat_rowid: message.rowid,
-            incoming,
-            text: partial,
-            provider: provider.id().to_string(),
-            model,
-            input_tokens: response.input_tokens,
-            output_tokens: response.output_tokens,
-            latency_ms: response.latency_ms,
-            held_for_review: true,
-            // 質問が取れていない場合もある（合図だけ返ってきたとき）。
-            unanswerable: if asked.is_empty() {
-                vec!["このメッセージに答える材料がありません".to_string()]
-            } else {
-                asked
-            },
-            skipped: None,
-        });
-    }
-
-    let cleaned_source = prompt::strip_need_info(&response.text);
-    let (text, held) = match clean(&cleaned_source, preset.hard_max_length()) {
+    let (text, held) = match clean(&response.text, preset.hard_max_length()) {
         Cleaned::Ok(t) => (t, false),
         Cleaned::TooLong { text, chars } => {
             // 送らずに確認へ倒す。長さの暴走は事故に直結する。
@@ -301,7 +266,6 @@ pub async fn draft_reply(
         output_tokens: response.output_tokens,
         latency_ms: response.latency_ms,
         held_for_review: held,
-        unanswerable: Vec::new(),
         skipped: None,
     })
 }
@@ -403,12 +367,58 @@ mod tests {
             LengthPreset::Normal,
             LengthPreset::Long,
             LengthPreset::VeryLong,
+            LengthPreset::Chars(MIN_TARGET_CHARS),
+            LengthPreset::Chars(400),
+            LengthPreset::Chars(MAX_TARGET_CHARS),
         ] {
             assert!(
                 p.max_tokens() as usize > p.hard_max_length(),
                 "{p:?} のトークン枠が狭すぎる"
             );
         }
+    }
+
+    // MARK: 目標文字数
+
+    #[test]
+    fn a_character_target_round_trips() {
+        assert_eq!(LengthPreset::parse("chars:400"), Some(LengthPreset::Chars(400)));
+        assert_eq!(LengthPreset::parse("chars: 400 "), Some(LengthPreset::Chars(400)));
+    }
+
+    /// 極端な値で暴走検知の閾値ごと壊れないこと。
+    /// UI でも弾くが、保存済みの値がここを通る。
+    #[test]
+    fn a_character_target_is_clamped() {
+        assert_eq!(LengthPreset::parse("chars:0"), Some(LengthPreset::Chars(MIN_TARGET_CHARS)));
+        assert_eq!(
+            LengthPreset::parse("chars:999999"),
+            Some(LengthPreset::Chars(MAX_TARGET_CHARS))
+        );
+    }
+
+    #[test]
+    fn a_broken_character_target_is_rejected() {
+        assert_eq!(LengthPreset::parse("chars:"), None);
+        assert_eq!(LengthPreset::parse("chars:abc"), None);
+        assert_eq!(LengthPreset::parse("chars:-5"), None);
+    }
+
+    /// 閾値が目標ちょうどだと、普通の生成まで確認送りになって手間が増える。
+    #[test]
+    fn the_limit_leaves_room_above_the_target() {
+        assert!(LengthPreset::Chars(400).hard_max_length() > 400);
+        // 短い目標でも、下限を割って極端に狭くならないこと。
+        assert!(LengthPreset::Chars(MIN_TARGET_CHARS).hard_max_length() >= 200);
+    }
+
+    /// 字数合わせのために文体が崩れるのが、実データ上いちばん多い失敗。
+    #[test]
+    fn a_character_target_still_insists_on_keeping_the_voice() {
+        let i = LengthPreset::Chars(400).instruction();
+        assert!(i.contains("400"));
+        assert!(i.contains("丁寧語"));
+        assert!(i.contains("文体"));
     }
 
     #[test]

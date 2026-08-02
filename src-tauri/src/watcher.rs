@@ -101,7 +101,6 @@ fn tick(app: &AppHandle, chat_db: &rusqlite::Connection, gap: bool) -> anyhow::R
 
             let who = &target.display_name;
             match outcome {
-                pipeline::Outcome::NeedsAnswer(qs) => notify::needs_answer(app, who, &qs),
                 pipeline::Outcome::Held(reason) => {
                     let draft = store.previous_draft(message.rowid)?.unwrap_or_default();
                     notify::awaiting_review(app, who, reason.label(), &draft);

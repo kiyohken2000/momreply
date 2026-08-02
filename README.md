@@ -5,8 +5,8 @@
 生成した返信は、確認したうえで送るか、条件を満たせば自動で送る。
 返信対象は chat.db の会話一覧から任意に選べる。
 
-> **状態: 開発中。** 送信機能と UI はまだ無い。
-> 現時点で動くのは chat.db の読み取り、返信対象の登録、質問の抽出まで。
+> **状態: 開発中。** 生成・送信・メニューバー UI まで動く。
+> 全自動での運用（ガード一式）はまだ検証中。
 
 ---
 
@@ -14,14 +14,17 @@
 
 家族や近しい相手とのやり取りで、
 
-- 相手の質問に答えないままにすると関係がこじれる
+- 返さないままにすると関係がこじれる
 - しかし毎回文面を考えるのが負担になっている
 
-という状態を想定している。返信を代筆させて負担を下げつつ、
-**答えるべきことにはちゃんと答える**ことを目的にする。
+という状態を想定している。**放っておいても会話が途切れない**ことを目的にする。
 
-そのため「雑談を無難に続ける」より「**質問に具体的に答える**」を優先した設計になっている。
-答える材料が無い質問は、勝手に推測させず人間に一度だけ確認し、以後は再利用する。
+そのため「質問に具体的に答える」ではなく、
+**「受け止めたことは伝えるが、何も確定させない」**返し方を選んでいる。
+
+日付・可否・金額・約束は言い切らせない。だから人への確認が発生せず、
+誤った事実を自動送信する危険も小さい。代わりに、相手が本当に知りたい答えは返らない。
+言い切ってよいことは `self.md`（後述）に書いた内容だけである。
 
 ---
 
@@ -86,15 +89,12 @@ cargo run -p momreply-cli -- target list
 cargo run -p momreply-cli -- target pending --slug someone   # 未処理の新着
 ```
 
-### 3. 質問を抽出して答える
+### 3. 返信の長さを決める
 
 ```sh
-cargo run -p momreply-cli -- questions scan --slug someone
-cargo run -p momreply-cli -- questions list --slug someone
-cargo run -p momreply-cli -- questions answer --id 3 --answer "持っている"
+cargo run -p momreply-cli -- target set --slug someone --preset long
+cargo run -p momreply-cli -- target set --slug someone --preset chars:400   # 目標文字数
 ```
-
-答えた内容は `self.md`（後述）に事実として追記され、次から同じ質問が来ても聞かれない。
 
 ### メッセージを直接見る
 
@@ -128,8 +128,8 @@ cargo run -p momreply-cli -- messages --handle someone@icloud.com --limit 20
 | 置き場所 | 内容 |
 |---|---|
 | `~/Library/Messages/chat.db` | **読み取りのみ。** 登録した相手の会話だけを読む |
-| `~/Library/Application Support/net.votepurchase.momreply/app.db` | 処理履歴・生成ログ・質問 |
-| `.../self.md` | 自分についての事実。AI が断定してよい材料 |
+| `~/Library/Application Support/net.votepurchase.momreply/app.db` | 処理履歴・生成ログ・文体の手本 |
+| `.../self.md` | 書き方の指示と、言い切ってよい事実 |
 | `.../targets/<slug>.md` | 相手ごとのプロファイル |
 | Keychain | API キー |
 
@@ -139,12 +139,14 @@ API キーとメッセージ本文は、設定ファイル・ログ・リポジ�
 
 ### `self.md`
 
-相手の質問には自分側の事実が要る。「保険証はありますか？」の答えは
-相手のプロファイルをいくら充実させても出てこない。
+2 つの役割がある。
 
-材料が無いまま生成させると「確認してみる」のようなはぐらかしが毎回出る。
-それを避けるため、答えられない質問は推測させず人間に一度だけ聞き、
-`self.md` に貯めて再利用する。
+1. **文章の方向性への指示。** 「デスマス調にしない」「絵文字は使わない」など。
+   **文体の手本より優先される。**
+2. **言い切ってよい事実。** 返信は基本的に何も確定させないが、
+   ここに書いてあることだけはそのまま言ってよい。
+
+どちらも、相手のプロファイルをいくら充実させても出てこない。持っているのは本人だけである。
 
 ---
 
@@ -156,6 +158,7 @@ crates/
 │   └── src/
 │       ├── imessage/       chat.db（read-only）
 │       ├── store.rs        app.db スキーマ・CRUD
+│       ├── pipeline/       プロンプト・ガード・生成・送信
 │       ├── questions.rs    疑問文の切り出し
 │       ├── profile.rs      self.md / 相手プロファイル
 │       └── paths.rs        ファイル配置
@@ -171,11 +174,10 @@ UI（Tauri）を載せたあとも、chat.db へのアクセスは `momreply-cor
 - [x] **Phase 0** chat.db 読み取り（read-only 接続 / `attributedBody` デコード / 除外判定）
 - [ ] **Phase 1** 生成 + ドライラン
   - [x] 返信対象の登録とバックログ保護
-  - [x] 質問の抽出と `self.md`
-  - [ ] LLM プロバイダ（Claude / Gemini / OpenAI / Apple Intelligence）
-  - [ ] few-shot 抽出
-  - [ ] 返信生成
-- [ ] **Phase 2** 送信 + メニューバー UI
+  - [x] LLM プロバイダ（Claude / Gemini / OpenAI）— Apple Intelligence は未着手
+  - [x] few-shot 抽出
+  - [x] 返信生成
+- [x] **Phase 2** 送信 + メニューバー UI
 - [ ] **Phase 3** ガード + 全自動
 - [ ] **Phase 4** プロファイル自動更新
 

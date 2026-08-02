@@ -11,9 +11,11 @@ import {
 /**
  * `self.md` の編集と、追記候補の承認。
  *
- * 候補は**承認するまで反映しない**。self.md は AI が事実として断定する
- * 唯一の材料なので、誤りが 1 行入ると以後すべての生成が汚染される。
- * だから根拠のやり取りを必ず並べて、人が判断できるようにしている。
+ * self.md は 2 つの役割を持つ。**文章の方向性の指示**（「デスマス調に
+ * しない」など。文例より優先される）と、**言い切ってよい事実**である。
+ *
+ * 候補は**承認するまで反映しない**。誤りが 1 行入ると以後すべての生成が
+ * 汚染されるため、根拠のやり取りを必ず並べて人が判断できるようにしている。
  */
 export default function SelfProfile() {
   const [text, setText] = useState<string | null>(null);
@@ -93,8 +95,8 @@ export default function SelfProfile() {
         自分について
       </h2>
       <p className="shrink-0 px-4 pb-2 text-xs text-neutral-500 dark:text-neutral-400">
-        ここに書いた内容だけを、AI は事実として断定します。書かれていないことは
-        推測せず、あなたに確認を求めます。
+        文章の方向性を指示できます（例:「デスマス調にしない」「絵文字を使わない」）。
+        指示は文体の手本より優先されます。事実を書けば、それだけは言い切ります。
       </p>
 
       {error && <p className="px-4 pb-2 text-xs break-words text-red-600">{error}</p>}
@@ -153,7 +155,11 @@ export default function SelfProfile() {
           value={text ?? ""}
           onChange={(e) => setText(e.target.value)}
           disabled={loading || busy}
-          placeholder={loading ? "読み込み中…" : undefined}
+          placeholder={
+            loading
+              ? "読み込み中…"
+              : "- デスマス調にしない\n- 絵文字は使わない\n- 長く書きすぎない"
+          }
           spellCheck={false}
           className="min-h-32 w-full flex-1 resize-none rounded border border-neutral-300 p-2 font-mono text-xs leading-relaxed disabled:opacity-50 dark:border-neutral-600 dark:bg-neutral-800"
         />

@@ -8,7 +8,6 @@ use momreply_core::{
     facts, fewshot, imessage,
     pipeline::{self, LengthPreset},
     profile,
-    questions::{self, QuestionKind},
     store::{NewTarget, Store},
 };
 
@@ -47,9 +46,6 @@ enum Command {
     /// 返信対象の相手を管理する。
     #[command(subcommand)]
     Target(TargetCmd),
-    /// 相手からの質問と、それに対する自分の答えを管理する。
-    #[command(subcommand)]
-    Questions(QuestionCmd),
     /// 新着を検知して処理し続ける（仕様書 6.1）。
     ///
     /// 既定はドライラン。実際に送るには --live を明示する。
@@ -142,42 +138,6 @@ enum FactCmd {
 }
 
 #[derive(Subcommand)]
-enum QuestionCmd {
-    /// 直近のメッセージから質問を抽出して溜める。
-    Scan {
-        #[arg(long)]
-        slug: String,
-        /// 遡る件数。
-        #[arg(long, default_value_t = 100)]
-        limit: u32,
-    },
-    /// まだ答えていない質問を並べる。
-    List {
-        #[arg(long)]
-        slug: String,
-    },
-    /// 質問に答える。答えは self.md にも追記され、次からは聞かれない。
-    Answer {
-        #[arg(long)]
-        id: i64,
-        #[arg(long)]
-        answer: String,
-    },
-    /// 「明日来る？」のような、その都度聞かれるが答えが一貫している
-    /// 質問に、既定の答えを設定する。
-    Standing {
-        #[arg(long)]
-        slug: String,
-        /// 既定の答え。省略すると現在の設定を表示する。
-        #[arg(long)]
-        set: Option<String>,
-        /// この定型回答での自動送信を承認する（初回のみ必要）。
-        #[arg(long)]
-        confirm: bool,
-    },
-}
-
-#[derive(Subcommand)]
 enum TargetCmd {
     /// 相手を登録する。登録時点より前のメッセージは処理対象にならない。
     Add {
@@ -207,12 +167,10 @@ enum TargetCmd {
     Set {
         #[arg(long)]
         slug: String,
-        /// 既定の長さ（mirror|short|normal|long|very_long）。
+        /// 既定の長さ。プリセット（mirror|short|normal|long|very_long）か、
+        /// 目標文字数を指定する chars:400 の形。
         #[arg(long)]
         preset: Option<String>,
-        /// 返信の方針。precise=具体的に答える / vague=曖昧に返して人に聞かない。
-        #[arg(long)]
-        mode: Option<String>,
     },
 }
 
@@ -234,7 +192,6 @@ async fn main() -> Result<()> {
             include_skipped,
         } => cmd_messages(&chat_db, &handle, limit, include_skipped),
         Command::Target(cmd) => cmd_target(&chat_db, cmd),
-        Command::Questions(cmd) => cmd_questions(&chat_db, cmd),
         Command::Watch { slug, live, once } => {
             cmd_watch(&chat_db, &chat_db_path, &slug, live, once).await
         }
@@ -409,12 +366,6 @@ async fn cmd_watch(
                 }
                 pipeline::Outcome::Skipped(reason) => {
                     println!("  スキップ（{}）", reason.label())
-                }
-                pipeline::Outcome::NeedsAnswer(qs) => {
-                    println!("  答える材料がありません:");
-                    for q in qs {
-                        println!("    ・{q}");
-                    }
                 }
                 pipeline::Outcome::Failed(why) => println!("  失敗: {why}"),
             }
@@ -635,36 +586,6 @@ async fn cmd_generate(
         return Ok(());
     }
 
-    if !draft.unanswerable.is_empty() {
-        if draft.text.trim().is_empty() {
-            println!("答える材料がありません。送信せず確認へ回しました。");
-        } else {
-            println!("--- 途中まで（送信していません）---");
-            println!("{}", draft.text);
-            println!("---");
-            println!("残りは材料が足りません:");
-        }
-        for q in &draft.unanswerable {
-            println!("  ・{q}");
-        }
-        println!();
-        println!("答えを登録する:");
-        println!("  momreply-cli questions list --slug {slug}");
-        store.record_processed(
-            target.id,
-            message.rowid,
-            &message.chat_identifier,
-            message.date.timestamp(),
-            message.body.as_deref(),
-            "awaiting_review",
-            Some("needs_answer"),
-            None,
-            None,
-            None,
-        )?;
-        return Ok(());
-    }
-
     println!("--- 返信案（送信していません） ---");
     println!("{}", draft.text);
     println!("---");
@@ -694,148 +615,6 @@ async fn cmd_generate(
         Some(&draft.provider),
         Some(&draft.model),
     )?;
-    Ok(())
-}
-
-fn cmd_questions(chat_db: &rusqlite::Connection, cmd: QuestionCmd) -> Result<()> {
-    let store = Store::open_default()?;
-
-    match cmd {
-        QuestionCmd::Scan { slug, limit } => {
-            let target = store
-                .target_by_slug(&slug)?
-                .with_context(|| format!("'{slug}' は登録されていない"))?;
-
-            let messages = imessage::recent_messages(chat_db, &target.handles, limit)?;
-            let mut scanned = 0usize;
-            let mut added = 0usize;
-            let mut already_known = 0usize;
-            let mut visit = 0usize;
-
-            for m in &messages {
-                // 自分の発言と除外対象は見ない。
-                if m.is_from_me || m.skip.is_some() {
-                    continue;
-                }
-                let Some(body) = &m.body else { continue };
-
-                let found = questions::extract(body);
-                if found.is_empty() {
-                    continue;
-                }
-                scanned += found.len();
-
-                for q in &found {
-                    if q.kind() == QuestionKind::Visit {
-                        visit += 1;
-                    }
-                    if store.known_answer(target.id, &q.text)?.is_some() {
-                        already_known += 1;
-                    }
-                }
-                added += store.record_questions(target.id, m.rowid, &found)?;
-            }
-
-            println!(
-                "{} 件のメッセージから質問 {} 件を検出",
-                messages.len(),
-                scanned
-            );
-            println!("  新規に記録: {added} 件");
-            println!("  既に答えがある: {already_known} 件");
-            println!("  予定型（定型回答で扱う）: {visit} 件");
-
-            if visit > 0 && store.standing_answer(target.id, QuestionKind::Visit)?.is_none() {
-                println!();
-                println!(
-                    "予定型の質問に既定の答えが未設定です。設定するまで毎回確認が必要になります:"
-                );
-                println!(
-                    "  momreply-cli questions standing --slug {slug} --set \"行かない\""
-                );
-            }
-            if added > 0 {
-                println!();
-                println!("`momreply-cli questions list --slug {slug}` で確認して答える。");
-            }
-        }
-
-        QuestionCmd::List { slug } => {
-            let target = store
-                .target_by_slug(&slug)?
-                .with_context(|| format!("'{slug}' は登録されていない"))?;
-            let pending = store.unanswered_questions(target.id)?;
-
-            if pending.is_empty() {
-                println!("未回答の質問はありません。");
-                return Ok(());
-            }
-            println!("未回答 {} 件:", pending.len());
-            for q in &pending {
-                println!("  #{:<4} {}", q.id, q.question);
-                if let Some(ctx) = &q.context {
-                    let brief: String = ctx.chars().take(60).collect();
-                    let ellipsis = if ctx.chars().count() > 60 { "…" } else { "" };
-                    println!("        （状況: {brief}{ellipsis}）");
-                }
-            }
-            println!();
-            println!("答える: momreply-cli questions answer --id <ID> --answer \"...\"");
-        }
-
-        QuestionCmd::Answer { id, answer } => {
-            let q = store.answer_question(id, &answer)?;
-            profile::append_fact(&q.question, &answer)?;
-            println!("記録しました。");
-            println!("  質問: {}", q.question);
-            println!("  答え: {answer}");
-            println!();
-            println!("self.md: {}", momreply_core::paths::self_profile()?.display());
-            println!("次から同じ質問が来ても、あなたに聞かずに答えられます。");
-        }
-
-        QuestionCmd::Standing { slug, set, confirm } => {
-            let target = store
-                .target_by_slug(&slug)?
-                .with_context(|| format!("'{slug}' は登録されていない"))?;
-
-            if let Some(answer) = set {
-                let saved = store.set_standing_answer(target.id, QuestionKind::Visit, &answer)?;
-                println!("予定型の質問への既定の答えを設定しました。");
-                println!("  「明日来る？」「泊まる？」などに対して: 「{}」", saved.answer);
-                println!();
-                if saved.is_confirmed() {
-                    println!("承認済みのため、自動送信に使われます。");
-                } else {
-                    println!("まだ自動送信には使いません。内容を確認したうえで承認してください:");
-                    println!("  momreply-cli questions standing --slug {slug} --confirm");
-                }
-                return Ok(());
-            }
-
-            if confirm {
-                store.confirm_standing_answer(target.id, QuestionKind::Visit)?;
-                println!("承認しました。以後この定型回答は自動送信に使われます。");
-                println!("変更したいときは --set で上書きすると、承認は取り消されます。");
-                return Ok(());
-            }
-
-            let answers = store.list_standing_answers(target.id)?;
-            if answers.is_empty() {
-                println!("定型回答は未設定です。");
-                println!("  momreply-cli questions standing --slug {slug} --set \"行かない\"");
-                return Ok(());
-            }
-            for a in answers {
-                println!(
-                    "{:<8} 「{}」  {}",
-                    format!("{:?}", a.kind),
-                    a.answer,
-                    if a.is_confirmed() { "承認済み" } else { "未承認（自動送信しない）" }
-                );
-            }
-        }
-    }
     Ok(())
 }
 
@@ -1008,7 +787,7 @@ fn cmd_target(chat_db: &rusqlite::Connection, cmd: TargetCmd) -> Result<()> {
             println!("削除: {} ({})", target.display_name, target.slug);
         }
 
-        TargetCmd::Set { slug, preset, mode } => {
+        TargetCmd::Set { slug, preset } => {
             let target = store
                 .target_by_slug(&slug)?
                 .with_context(|| format!("'{slug}' は登録されていない"))?;
@@ -1016,23 +795,9 @@ fn cmd_target(chat_db: &rusqlite::Connection, cmd: TargetCmd) -> Result<()> {
                 LengthPreset::parse(p).with_context(|| format!("不明な長さ指定: {p}"))?;
                 store.set_reply_preset(target.id, p)?;
             }
-            if let Some(m) = &mode {
-                if m != "precise" && m != "vague" {
-                    bail!("mode は precise か vague");
-                }
-                store.set_reply_mode(target.id, m)?;
-            }
             let t = store.target_by_slug(&slug)?.unwrap();
             println!("{}", t.display_name);
             println!("  長さ: {}", t.reply_preset);
-            println!(
-                "  方針: {}",
-                if t.reply_mode == "vague" {
-                    "vague（曖昧に返す。人に聞かない）"
-                } else {
-                    "precise（具体的に答える。材料が無ければ人に聞く）"
-                }
-            );
         }
 
         TargetCmd::Pending { slug } => {

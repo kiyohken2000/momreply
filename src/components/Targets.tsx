@@ -6,29 +6,18 @@ import {
   listChatChoices,
   listTargets,
   removeTarget,
-  previewReply,
   rebuildFewshot,
   setLimit,
+  targetChars,
   updateTarget,
+  CHARS_PREFIX,
   LENGTH_PRESETS,
+  MAX_TARGET_CHARS,
+  MIN_TARGET_CHARS,
   type ChatChoice,
-  type Preview,
   type Limits,
   type TargetView,
 } from "../api";
-
-const MODES = [
-  {
-    id: "vague",
-    label: "おまかせ",
-    hint: "明確な答えは出さず、当たり障りのない長文で返します。あなたへの確認は発生しません。",
-  },
-  {
-    id: "precise",
-    label: "きちんと答える",
-    hint: "質問に具体的に答えます。答える材料が無いときはあなたに聞きます。",
-  },
-] as const;
 
 /** 相手ごとの設定と、暴走を止める上限（仕様書 6.4.5）。 */
 export default function Targets({ onDrafted }: { onDrafted?: () => void }) {
@@ -41,8 +30,6 @@ export default function Targets({ onDrafted }: { onDrafted?: () => void }) {
   const [picked, setPicked] = useState<string>("");
   const [newName, setNewName] = useState("");
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
-  const [preview, setPreview] = useState<Preview | null>(null);
-  const [previewing, setPreviewing] = useState<string | null>(null);
   const [drafting, setDrafting] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -245,8 +232,9 @@ export default function Targets({ onDrafted }: { onDrafted?: () => void }) {
           {confirmRemove === t.slug && (
             <div className="mt-2 rounded border border-red-300 bg-red-50 p-2 dark:border-red-800 dark:bg-red-950/40">
               <p className="text-[11px]">
-                {t.display_name} を削除すると、<strong>処理履歴・文体の手本・
-                質問への答えもまとめて消えます。</strong>元に戻せません。
+                {t.display_name} を削除すると、
+                <strong>処理履歴と文体の手本もまとめて消えます。</strong>
+                元に戻せません。
               </p>
               <div className="mt-1 flex gap-2">
                 <button
@@ -268,25 +256,6 @@ export default function Targets({ onDrafted }: { onDrafted?: () => void }) {
           )}
 
           <div className="mt-2">
-            <div className="text-[11px] text-neutral-500 dark:text-neutral-400">返信の方針</div>
-            {MODES.map((m) => (
-              <label key={m.id} className="mt-1 flex items-start gap-2">
-                <input
-                  type="radio"
-                  name={`mode-${t.slug}`}
-                  className="mt-0.5"
-                  checked={t.reply_mode === m.id}
-                  onChange={() => void patch(t.slug, { replyMode: m.id })}
-                />
-                <span className="text-xs">
-                  {m.label}
-                  <span className="block text-[10px] text-neutral-400">{m.hint}</span>
-                </span>
-              </label>
-            ))}
-          </div>
-
-          <div className="mt-2">
             <div className="text-[11px] text-neutral-500 dark:text-neutral-400">長さ</div>
             <div className="mt-1 flex flex-wrap gap-1">
               {LENGTH_PRESETS.map((p) => (
@@ -305,17 +274,26 @@ export default function Targets({ onDrafted }: { onDrafted?: () => void }) {
                 </button>
               ))}
             </div>
+            <TargetChars
+              value={targetChars(t.reply_preset)}
+              onChange={(chars) =>
+                void patch(t.slug, {
+                  // 空にしたらプリセットへ戻す。長さの指定が
+                  // 何も無い状態は作らない。
+                  replyPreset: chars === null ? "mirror" : `${CHARS_PREFIX}${chars}`,
+                })
+              }
+            />
           </div>
 
           {/* 返信案を確認待ちに積む。必ず人の確認を挟むので、押しても飛ばない。 */}
           <div className="mt-3">
             <button
               type="button"
-              disabled={drafting !== null || previewing !== null}
+              disabled={drafting !== null}
               onClick={() =>
                 void (async () => {
                   setDrafting(t.slug);
-                  setPreview(null);
                   setError(null);
                   setMessage(null);
                   try {
@@ -335,47 +313,6 @@ export default function Targets({ onDrafted }: { onDrafted?: () => void }) {
             <p className="mt-1 text-[10px] text-neutral-400">
               返信タブに入ります。送信するかどうかは、そこで見てから決められます。
             </p>
-          </div>
-
-          {/* 試し生成。記録も処理位置も動かさないので、何度押しても安全。 */}
-          <div className="mt-3">
-            <button
-              type="button"
-              disabled={previewing !== null || drafting !== null}
-              onClick={() =>
-                void (async () => {
-                  setPreviewing(t.slug);
-                  setPreview(null);
-                  setError(null);
-                  try {
-                    setPreview(await previewReply(t.slug));
-                  } catch (e) {
-                    setError(String(e));
-                  } finally {
-                    setPreviewing(null);
-                  }
-                })()
-              }
-              className="rounded border border-neutral-300 px-2 py-1 text-xs disabled:opacity-40 dark:border-neutral-600"
-            >
-              {previewing === t.slug ? "生成中…" : "いまの設定で試す"}
-            </button>
-            <p className="mt-1 text-[10px] text-neutral-400">
-              直近の受信メッセージで返信案を作ります。送信も記録もせず、
-              処理位置も動かしません。
-            </p>
-
-            {preview && previewing === null && (
-              <div className="mt-2 rounded border border-neutral-300 p-2 dark:border-neutral-600">
-                <div className="text-[10px] text-neutral-400">相手</div>
-                <div className="text-[11px] whitespace-pre-wrap">{preview.incoming}</div>
-                <div className="mt-2 text-[10px] text-neutral-400">返信案（送信していません）</div>
-                <div className="text-[11px] whitespace-pre-wrap">{preview.draft}</div>
-                <div className="mt-1 text-[10px] text-neutral-400">
-                  {preview.model} / {(preview.latency_ms / 1000).toFixed(1)}秒
-                </div>
-              </div>
-            )}
           </div>
 
           {/* 自動送信は最後に置く。ここを入れると確認なしに本物が飛ぶ。 */}
@@ -467,6 +404,76 @@ function LimitRow({
         />
       </div>
       {hint && <p className="text-[10px] text-neutral-400">{hint}</p>}
+    </div>
+  );
+}
+
+/**
+ * 目標文字数。プリセットより優先される（[`targetChars`]）。
+ *
+ * 入力のたびに保存すると、「4」と打った瞬間に 4 文字で保存されてしまう。
+ * 確定は blur と Enter のときだけにする。
+ */
+function TargetChars({
+  value,
+  onChange,
+}: {
+  value: number | null;
+  onChange: (chars: number | null) => void;
+}) {
+  const [draft, setDraft] = useState(value === null ? "" : String(value));
+
+  // 別の場所でプリセットが選ばれたら、こちらの表示も追従させる。
+  useEffect(() => {
+    setDraft(value === null ? "" : String(value));
+  }, [value]);
+
+  function commit() {
+    const trimmed = draft.trim();
+    if (trimmed === "") {
+      if (value !== null) onChange(null);
+      return;
+    }
+    const n = Math.round(Number(trimmed));
+    if (!Number.isFinite(n)) {
+      setDraft(value === null ? "" : String(value));
+      return;
+    }
+    const clamped = Math.min(Math.max(n, MIN_TARGET_CHARS), MAX_TARGET_CHARS);
+    setDraft(String(clamped));
+    if (clamped !== value) onChange(clamped);
+  }
+
+  return (
+    <div className="mt-2">
+      <div className="flex items-center gap-2">
+        <span className="flex-1 text-[11px] text-neutral-500 dark:text-neutral-400">
+          目標文字数
+        </span>
+        <input
+          type="number"
+          min={MIN_TARGET_CHARS}
+          max={MAX_TARGET_CHARS}
+          step={50}
+          value={draft}
+          placeholder="—"
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              e.currentTarget.blur();
+            }
+          }}
+          className="w-20 rounded border border-neutral-300 px-2 py-0.5 text-right text-xs dark:border-neutral-600 dark:bg-neutral-800"
+        />
+        <span className="text-[11px] text-neutral-400">文字</span>
+      </div>
+      <p className="mt-0.5 text-[10px] text-neutral-400">
+        {value === null
+          ? `入れるとプリセットより優先されます（${MIN_TARGET_CHARS}〜${MAX_TARGET_CHARS}）。`
+          : "空にするとプリセットに戻ります。"}
+      </p>
     </div>
   );
 }

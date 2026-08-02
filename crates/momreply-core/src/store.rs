@@ -11,14 +11,9 @@ use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::imessage;
-use crate::questions::{Question, QuestionKind};
-
-/// `read_pending_row` が期待する列順。
-const PENDING_COLUMNS: &str = "SELECT id, question, context, kind, answer, chat_rowid, \
-     created_at, stance FROM pending_questions";
 
 /// スキーマバージョン。`PRAGMA user_version` で管理する。
-const SCHEMA_VERSION: i32 = 5;
+const SCHEMA_VERSION: i32 = 6;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS targets (
@@ -28,10 +23,9 @@ CREATE TABLE IF NOT EXISTS targets (
   enabled       INTEGER NOT NULL DEFAULT 1,
   -- 既定は OFF。配布時に自動送信が既定で走る状態にしてはいけない。
   auto_send     INTEGER NOT NULL DEFAULT 0,
+  -- 'mirror' などのプリセット名か、'chars:400' の形の目標文字数
+  -- （[`crate::pipeline::LengthPreset`]）。
   reply_preset  TEXT    NOT NULL DEFAULT 'mirror',
-  -- precise: 質問に具体的に答える。材料が無ければ人に聞く。
-  -- vague:   明確な回答を避け、当たり障りのない長文で返す。人に聞かない。
-  reply_mode    TEXT    NOT NULL DEFAULT 'precise',
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL
 );
@@ -112,44 +106,6 @@ CREATE TABLE IF NOT EXISTS fewshot_pairs (
 );
 CREATE INDEX IF NOT EXISTS idx_fewshot_target ON fewshot_pairs(target_id);
 
--- 仕様書には無い。相手の質問に具体的に答えるために必要になる。
--- 答える材料が self.md に無い質問をここに溜め、一度だけ人間に聞く。
--- 答えは self.md に反映され、以後は同じ質問を自動で答えられるようになる。
-CREATE TABLE IF NOT EXISTS pending_questions (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  target_id   INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
-  chat_rowid  INTEGER,
-  question    TEXT    NOT NULL,      -- 原文のまま
-  context     TEXT,                  -- 質問の前に置かれた状況説明
-  kind        TEXT    NOT NULL DEFAULT 'fact',  -- fact|visit
-  -- どう答えるか。fact 以外は self.md に書かない（事実ではないため）。
-  stance      TEXT    NOT NULL DEFAULT 'fact',  -- fact|deflect|ignore
-  norm_key    TEXT    NOT NULL DEFAULT '',  -- 表記ゆれを吸収した重複判定キー
-  answer      TEXT,
-  answered_at INTEGER,
-  created_at  INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_pending_unanswered
-  ON pending_questions(target_id, answered_at);
--- norm_key のインデックスは migrate() 側で張る。
--- v1 の app.db には列が無く、ALTER TABLE より先にここを実行すると落ちる。
-
--- 定型回答。その都度変わるように見えて実際は一貫している質問
--- （「明日来る？」など）に、既定の答えを 1 つ持たせる。
--- self.md の「事実」にはできない種類なので分けている。
-CREATE TABLE IF NOT EXISTS standing_answers (
-  id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  target_id    INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
-  kind         TEXT    NOT NULL,     -- questions::QuestionKind に対応
-  answer       TEXT    NOT NULL,
-  -- 初回のみ確認: この定型回答で自動送信する前に一度だけ人間の承認が要る。
-  -- NULL の間は自動送信せず awaiting_review に倒す。
-  confirmed_at INTEGER,
-  created_at   INTEGER NOT NULL,
-  updated_at   INTEGER NOT NULL,
-  UNIQUE(target_id, kind)
-);
-
 -- self.md への追記候補。**承認するまで反映しない。**
 -- self.md は AI が事実として断定する唯一の材料なので、誤りが入ると
 -- 以後すべての生成が汚染される（仕様書 6.7 と同じ理由）。
@@ -182,58 +138,10 @@ pub struct Target {
     pub display_name: String,
     pub enabled: bool,
     pub auto_send: bool,
+    /// プリセット名か `chars:400`。[`crate::pipeline::LengthPreset`] が読む。
     pub reply_preset: String,
-    /// `precise` | `vague`。[`crate::pipeline::ReplyMode`] を参照。
-    pub reply_mode: String,
     pub handles: Vec<String>,
     pub last_seen_rowid: Option<i64>,
-}
-
-/// 答える材料がまだ無い質問。
-#[derive(Debug, Clone)]
-pub struct PendingQuestion {
-    pub id: i64,
-    /// 原文のまま。人間に見せるのはこちら。
-    pub question: String,
-    /// 質問の前に置かれた状況説明。
-    pub context: Option<String>,
-    pub kind: QuestionKind,
-    pub answer: Option<String>,
-    pub chat_rowid: Option<i64>,
-    pub created_at: i64,
-    /// `fact` | `deflect` | `ignore`。fact 以外は `self.md` に書かない。
-    pub stance: String,
-}
-
-/// 定型回答。
-#[derive(Debug, Clone)]
-pub struct StandingAnswer {
-    pub id: i64,
-    pub kind: QuestionKind,
-    pub answer: String,
-    /// `None` の間は自動送信に使わない（初回のみ確認）。
-    pub confirmed_at: Option<i64>,
-}
-
-impl StandingAnswer {
-    /// 自動送信に使ってよいか。
-    pub fn is_confirmed(&self) -> bool {
-        self.confirmed_at.is_some()
-    }
-}
-
-fn kind_label(kind: QuestionKind) -> &'static str {
-    match kind {
-        QuestionKind::Visit => "visit",
-        QuestionKind::Fact => "fact",
-    }
-}
-
-fn kind_from_label(label: &str) -> QuestionKind {
-    match label {
-        "visit" => QuestionKind::Visit,
-        _ => QuestionKind::Fact,
-    }
 }
 
 /// `generation_log` に残す 1 件。
@@ -342,58 +250,18 @@ impl Store {
         }
         self.conn.execute_batch(SCHEMA)?;
 
-        // v1 で作られた app.db には norm_key が無い。CREATE TABLE IF NOT EXISTS
-        // では追加されないので明示的に足す。インデックスは列が揃ってから張る。
-        if !self.has_column("pending_questions", "norm_key")? {
-            self.conn.execute(
-                "ALTER TABLE pending_questions ADD COLUMN norm_key TEXT NOT NULL DEFAULT ''",
-                [],
-            )?;
-        }
-        // v3: 長文から切り出した状況説明と、質問の種類。
-        if !self.has_column("pending_questions", "context")? {
-            self.conn
-                .execute("ALTER TABLE pending_questions ADD COLUMN context TEXT", [])?;
-        }
-        if !self.has_column("targets", "reply_mode")? {
-            self.conn.execute(
-                "ALTER TABLE targets ADD COLUMN reply_mode TEXT NOT NULL DEFAULT 'precise'",
-                [],
-            )?;
-        }
-        if !self.has_column("pending_questions", "stance")? {
-            self.conn.execute(
-                "ALTER TABLE pending_questions ADD COLUMN stance TEXT NOT NULL DEFAULT 'fact'",
-                [],
-            )?;
-        }
-        if !self.has_column("pending_questions", "kind")? {
-            self.conn.execute(
-                "ALTER TABLE pending_questions ADD COLUMN kind TEXT NOT NULL DEFAULT 'fact'",
-                [],
-            )?;
-        }
+        // v6: 質問を人に聞く仕組みをやめた。生成は常に「おまかせ」で、
+        // 確定的な答えを出さないので、聞くべきことがそもそも出ない。
+        // 既に作られている app.db では、この 2 つのテーブルは孤児になる。
+        // 中身は個人的なやり取りなので、残さず落とす。
         self.conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_pending_key
-               ON pending_questions(target_id, norm_key);",
+            "DROP TABLE IF EXISTS pending_questions;
+             DROP TABLE IF EXISTS standing_answers;",
         )?;
 
         self.conn
             .pragma_update(None, "user_version", SCHEMA_VERSION)?;
         Ok(())
-    }
-
-    fn has_column(&self, table: &str, column: &str) -> Result<bool> {
-        let mut stmt = self
-            .conn
-            .prepare(&format!("PRAGMA table_info({table})"))?;
-        let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
-            if row.get::<_, String>(1)? == column {
-                return Ok(true);
-            }
-        }
-        Ok(false)
     }
 
     /// 相手を登録する。
@@ -456,7 +324,7 @@ impl Store {
             .conn
             .query_row(
                 "SELECT t.id, t.slug, t.display_name, t.enabled, t.auto_send, t.reply_preset,
-                        s.last_seen_rowid, t.reply_mode
+                        s.last_seen_rowid
                  FROM targets t
                  LEFT JOIN target_state s ON s.target_id = t.id
                  WHERE t.id = ?1",
@@ -488,7 +356,7 @@ impl Store {
     pub fn list_targets(&self) -> Result<Vec<Target>> {
         let mut stmt = self.conn.prepare(
             "SELECT t.id, t.slug, t.display_name, t.enabled, t.auto_send, t.reply_preset,
-                    s.last_seen_rowid, t.reply_mode
+                    s.last_seen_rowid
              FROM targets t
              LEFT JOIN target_state s ON s.target_id = t.id
              ORDER BY t.id",
@@ -544,15 +412,6 @@ impl Store {
         Ok(())
     }
 
-    /// おまかせモードの切り替え。
-    pub fn set_reply_mode(&self, target_id: i64, mode: &str) -> Result<()> {
-        self.conn.execute(
-            "UPDATE targets SET reply_mode = ?2, updated_at = ?3 WHERE id = ?1",
-            (target_id, mode, now_unix()),
-        )?;
-        Ok(())
-    }
-
     pub fn set_reply_preset(&self, target_id: i64, preset: &str) -> Result<()> {
         self.conn.execute(
             "UPDATE targets SET reply_preset = ?2, updated_at = ?3 WHERE id = ?1",
@@ -573,233 +432,6 @@ impl Store {
         self.conn
             .execute("DELETE FROM targets WHERE id = ?1", [target_id])?;
         Ok(())
-    }
-
-    // MARK: 未回答質問（self.md の材料集め）
-
-    /// 抽出した質問を記録する。次のものは積まない。
-    ///
-    /// - 既に答えたもの・未回答で溜まっているもの（同じことを二度聞かないため）
-    /// - 定型回答が用意されている種類のもの（人間に聞く必要が無いため）
-    ///
-    /// 戻り値は新しく積まれた質問の件数。
-    pub fn record_questions(
-        &self,
-        target_id: i64,
-        chat_rowid: i64,
-        questions: &[Question],
-    ) -> Result<usize> {
-        let now = now_unix();
-        let mut added = 0;
-        for q in questions {
-            let kind = q.kind();
-
-            // 定型回答があるなら人間に聞かない。未確認でも「答えは決まって
-            // いるが自動送信の承認がまだ」という状態なので、質問としては積まない。
-            if self.standing_answer(target_id, kind)?.is_some() {
-                continue;
-            }
-
-            let key = crate::questions::normalize(&q.text);
-            if self.find_question_by_key(target_id, &key)?.is_some() {
-                continue;
-            }
-
-            self.conn.execute(
-                "INSERT INTO pending_questions
-                   (target_id, chat_rowid, question, context, kind, norm_key, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                (
-                    target_id,
-                    chat_rowid,
-                    &q.text,
-                    &q.context,
-                    kind_label(kind),
-                    &key,
-                    now,
-                ),
-            )?;
-            added += 1;
-        }
-        Ok(added)
-    }
-
-    /// 表記ゆれを吸収したキーで既存の質問を引く。
-    fn find_question_by_key(&self, target_id: i64, key: &str) -> Result<Option<PendingQuestion>> {
-        self.conn
-            .query_row(
-                &format!("{PENDING_COLUMNS} WHERE target_id = ?1 AND norm_key = ?2 ORDER BY id LIMIT 1"),
-                (target_id, key),
-                Self::read_pending_row,
-            )
-            .optional()
-            .map_err(Into::into)
-    }
-
-    // MARK: 定型回答
-
-    /// 種類に対する定型回答を引く。
-    pub fn standing_answer(
-        &self,
-        target_id: i64,
-        kind: QuestionKind,
-    ) -> Result<Option<StandingAnswer>> {
-        self.conn
-            .query_row(
-                "SELECT id, kind, answer, confirmed_at
-                 FROM standing_answers WHERE target_id = ?1 AND kind = ?2",
-                (target_id, kind_label(kind)),
-                |row| {
-                    Ok(StandingAnswer {
-                        id: row.get(0)?,
-                        kind: kind_from_label(&row.get::<_, String>(1)?),
-                        answer: row.get(2)?,
-                        confirmed_at: row.get(3)?,
-                    })
-                },
-            )
-            .optional()
-            .map_err(Into::into)
-    }
-
-    /// 定型回答を設定する。
-    ///
-    /// **内容を変えたら確認状態はリセットされる。**
-    /// 一度承認した文面のまま別のことを自動送信させないため。
-    pub fn set_standing_answer(
-        &self,
-        target_id: i64,
-        kind: QuestionKind,
-        answer: &str,
-    ) -> Result<StandingAnswer> {
-        let now = now_unix();
-        let existing = self.standing_answer(target_id, kind)?;
-        let unchanged = existing.as_ref().is_some_and(|s| s.answer == answer);
-
-        self.conn.execute(
-            "INSERT INTO standing_answers (target_id, kind, answer, confirmed_at, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?5)
-             ON CONFLICT(target_id, kind) DO UPDATE SET
-               answer = excluded.answer,
-               confirmed_at = excluded.confirmed_at,
-               updated_at = excluded.updated_at",
-            (
-                target_id,
-                kind_label(kind),
-                answer,
-                // 文面が変わっていなければ確認状態を保つ。
-                unchanged.then(|| existing.as_ref().and_then(|s| s.confirmed_at)).flatten(),
-                now,
-            ),
-        )?;
-
-        // その種類の未回答質問はもう人間に聞く必要が無い。
-        // 残すと「答えるべきこと」の一覧が実態とずれる。
-        self.conn.execute(
-            "DELETE FROM pending_questions
-             WHERE target_id = ?1 AND kind = ?2 AND answer IS NULL",
-            (target_id, kind_label(kind)),
-        )?;
-
-        self.standing_answer(target_id, kind)?
-            .context("定型回答を保存できたが読み出せない")
-    }
-
-    /// 定型回答を自動送信に使うことを承認する（初回のみ確認）。
-    pub fn confirm_standing_answer(&self, target_id: i64, kind: QuestionKind) -> Result<()> {
-        let updated = self.conn.execute(
-            "UPDATE standing_answers SET confirmed_at = ?3, updated_at = ?3
-             WHERE target_id = ?1 AND kind = ?2",
-            (target_id, kind_label(kind), now_unix()),
-        )?;
-        if updated == 0 {
-            bail!("承認する定型回答が無い。先に set で登録すること");
-        }
-        Ok(())
-    }
-
-    pub fn list_standing_answers(&self, target_id: i64) -> Result<Vec<StandingAnswer>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, kind, answer, confirmed_at FROM standing_answers
-             WHERE target_id = ?1 ORDER BY kind",
-        )?;
-        let rows = stmt.query_map([target_id], |row| {
-            Ok(StandingAnswer {
-                id: row.get(0)?,
-                kind: kind_from_label(&row.get::<_, String>(1)?),
-                answer: row.get(2)?,
-                confirmed_at: row.get(3)?,
-            })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-    }
-
-    /// 対応が決まっている質問なら、その内容と答え方を返す。
-    ///
-    /// 答え方が `deflect` / `ignore` の場合、答えの本文は無い。
-    /// 事実として扱わせないため、呼び出し側で区別すること。
-    pub fn known_answer(
-        &self,
-        target_id: i64,
-        question: &str,
-    ) -> Result<Option<(Option<String>, String)>> {
-        let key = crate::questions::normalize(question);
-        Ok(self.find_question_by_key(target_id, &key)?.and_then(|q| {
-            let decided = q.answer.is_some() || q.stance != "fact";
-            decided.then_some((q.answer, q.stance))
-        }))
-    }
-
-    /// 質問への対応を決める。
-    ///
-    /// `fact` のときだけ `self.md` に書く価値がある。`deflect` / `ignore`
-    /// は事実ではないので、呼び出し側は `self.md` に追記しないこと。
-    pub fn resolve_question(
-        &self,
-        id: i64,
-        stance: &str,
-        answer: Option<&str>,
-    ) -> Result<PendingQuestion> {
-        self.conn.execute(
-            "UPDATE pending_questions
-             SET stance = ?2, answer = ?3, answered_at = ?4 WHERE id = ?1",
-            (id, stance, answer, now_unix()),
-        )?;
-        self.conn
-            .query_row(&format!("{PENDING_COLUMNS} WHERE id = ?1"), [id], Self::read_pending_row)
-            .optional()?
-            .with_context(|| format!("質問 #{id} が無い"))
-    }
-
-    pub fn unanswered_questions(&self, target_id: i64) -> Result<Vec<PendingQuestion>> {
-        let mut stmt = self.conn.prepare(&format!(
-            "{PENDING_COLUMNS} WHERE target_id = ?1 AND answer IS NULL ORDER BY id"
-        ))?;
-        let rows = stmt.query_map([target_id], Self::read_pending_row)?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-    }
-
-    /// 質問に答える。app.db に記録し、`self.md` にも事実として追記する。
-    pub fn answer_question(&self, question_id: i64, answer: &str) -> Result<PendingQuestion> {
-        let q = self
-            .conn
-            .query_row(
-                &format!("{PENDING_COLUMNS} WHERE id = ?1"),
-                [question_id],
-                Self::read_pending_row,
-            )
-            .optional()?
-            .with_context(|| format!("質問 #{question_id} が無い"))?;
-
-        self.conn.execute(
-            "UPDATE pending_questions SET answer = ?2, answered_at = ?3 WHERE id = ?1",
-            (question_id, answer, now_unix()),
-        )?;
-
-        Ok(PendingQuestion {
-            answer: Some(answer.to_string()),
-            ..q
-        })
     }
 
     // MARK: few-shot
@@ -1197,19 +829,6 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    fn read_pending_row(row: &rusqlite::Row) -> rusqlite::Result<PendingQuestion> {
-        Ok(PendingQuestion {
-            id: row.get(0)?,
-            question: row.get(1)?,
-            context: row.get(2)?,
-            kind: kind_from_label(&row.get::<_, String>(3)?),
-            answer: row.get(4)?,
-            chat_rowid: row.get(5)?,
-            created_at: row.get(6)?,
-            stance: row.get(7)?,
-        })
-    }
-
     fn read_target_row(row: &rusqlite::Row) -> rusqlite::Result<Target> {
         Ok(Target {
             id: row.get(0)?,
@@ -1219,7 +838,6 @@ impl Store {
             auto_send: row.get::<_, i64>(4)? != 0,
             reply_preset: row.get(5)?,
             last_seen_rowid: row.get(6)?,
-            reply_mode: row.get(7)?,
             handles: Vec::new(),
         })
     }
@@ -1367,147 +985,6 @@ mod tests {
             .add_target(&chat_db, new_target("x", "x@example.com"))
             .unwrap();
         assert!(!t.auto_send, "配布物で自動送信が既定 ON になってはいけない");
-    }
-
-    // MARK: 定型回答（初回のみ確認）
-
-    fn store_with_target() -> (Store, i64) {
-        let chat_db = fake_chat_db("t@example.com", 3);
-        let mut store = Store::open_in_memory().unwrap();
-        let t = store
-            .add_target(&chat_db, new_target("t", "t@example.com"))
-            .unwrap();
-        (store, t.id)
-    }
-
-    /// 設定しただけでは自動送信に使わせない。
-    #[test]
-    fn a_new_standing_answer_starts_unconfirmed() {
-        let (store, id) = store_with_target();
-        let saved = store
-            .set_standing_answer(id, QuestionKind::Visit, "行かない")
-            .unwrap();
-        assert!(!saved.is_confirmed());
-    }
-
-    #[test]
-    fn confirming_enables_it() {
-        let (store, id) = store_with_target();
-        store
-            .set_standing_answer(id, QuestionKind::Visit, "行かない")
-            .unwrap();
-        store.confirm_standing_answer(id, QuestionKind::Visit).unwrap();
-        assert!(store
-            .standing_answer(id, QuestionKind::Visit)
-            .unwrap()
-            .unwrap()
-            .is_confirmed());
-    }
-
-    /// 承認済みの文面を書き換えたら、承認は取り消す。
-    /// でないと「確認した文面」と「実際に送る文面」がずれる。
-    #[test]
-    fn changing_the_text_revokes_confirmation() {
-        let (store, id) = store_with_target();
-        store
-            .set_standing_answer(id, QuestionKind::Visit, "行かない")
-            .unwrap();
-        store.confirm_standing_answer(id, QuestionKind::Visit).unwrap();
-
-        let changed = store
-            .set_standing_answer(id, QuestionKind::Visit, "その日は行く")
-            .unwrap();
-        assert!(
-            !changed.is_confirmed(),
-            "文面を変えたのに承認が残っている"
-        );
-    }
-
-    /// 同じ文面で保存し直しただけなら承認は維持する。
-    #[test]
-    fn resaving_the_same_text_keeps_confirmation() {
-        let (store, id) = store_with_target();
-        store
-            .set_standing_answer(id, QuestionKind::Visit, "行かない")
-            .unwrap();
-        store.confirm_standing_answer(id, QuestionKind::Visit).unwrap();
-
-        let again = store
-            .set_standing_answer(id, QuestionKind::Visit, "行かない")
-            .unwrap();
-        assert!(again.is_confirmed());
-    }
-
-    #[test]
-    fn cannot_confirm_what_was_never_set() {
-        let (store, id) = store_with_target();
-        assert!(store.confirm_standing_answer(id, QuestionKind::Visit).is_err());
-    }
-
-    /// 定型回答があれば、その種類の質問で人間を呼び出さない。
-    #[test]
-    fn a_standing_answer_stops_questions_from_piling_up() {
-        let (store, id) = store_with_target();
-        let visit = Question {
-            text: "明日来る？".into(),
-            context: None,
-        };
-        assert_eq!(visit.kind(), QuestionKind::Visit);
-
-        assert_eq!(store.record_questions(id, 1, &[visit.clone()]).unwrap(), 1);
-
-        // 定型回答を入れると、以後は積まれない。
-        store
-            .set_standing_answer(id, QuestionKind::Visit, "行かない")
-            .unwrap();
-        assert_eq!(store.record_questions(id, 2, &[visit]).unwrap(), 0);
-
-        // 既に溜まっていた分も掃除される。人間に聞く必要が無くなったため。
-        assert!(store.unanswered_questions(id).unwrap().is_empty());
-    }
-
-    /// 事実型は定型回答の対象外。材料が無ければ人間に聞く。
-    #[test]
-    fn factual_questions_still_reach_the_human() {
-        let (store, id) = store_with_target();
-        store
-            .set_standing_answer(id, QuestionKind::Visit, "行かない")
-            .unwrap();
-
-        let fact = Question {
-            text: "保険証はありますか？".into(),
-            context: None,
-        };
-        assert_eq!(store.record_questions(id, 1, &[fact]).unwrap(), 1);
-        assert_eq!(store.unanswered_questions(id).unwrap().len(), 1);
-    }
-
-    #[test]
-    fn the_same_question_is_never_asked_twice() {
-        let (store, id) = store_with_target();
-        let q = Question {
-            text: "保険証は、ありますか？".into(),
-            context: None,
-        };
-        assert_eq!(store.record_questions(id, 1, &[q.clone()]).unwrap(), 1);
-        assert_eq!(store.record_questions(id, 2, &[q]).unwrap(), 0);
-    }
-
-    #[test]
-    fn context_survives_the_round_trip() {
-        let (store, id) = store_with_target();
-        store
-            .record_questions(
-                id,
-                1,
-                &[Question {
-                    text: "くる？".into(),
-                    context: Some("今日バーベキューをします".into()),
-                }],
-            )
-            .unwrap();
-        let pending = store.unanswered_questions(id).unwrap();
-        assert_eq!(pending[0].context.as_deref(), Some("今日バーベキューをします"));
     }
 
     #[test]

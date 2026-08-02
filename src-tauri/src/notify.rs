@@ -27,17 +27,6 @@ fn show(app: &AppHandle, title: &str, body: &str) {
     }
 }
 
-/// 答える材料が無くて止まったとき。
-///
-/// **これが最も急ぐ通知。** ここで気づかないと無返信のままになる。
-pub fn needs_answer(app: &AppHandle, who: &str, questions: &[String]) {
-    let body = match questions.first() {
-        Some(q) => format!("{}｜答える材料がありません", preview(q)),
-        None => "答える材料がありません".to_string(),
-    };
-    show(app, &format!("{who} からの質問に答えてください"), &body);
-}
-
 /// 生成はしたが、確認してから送る必要があるとき。
 pub fn awaiting_review(app: &AppHandle, who: &str, reason: &str, draft: &str) {
     show(

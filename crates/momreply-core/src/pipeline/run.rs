@@ -32,8 +32,6 @@ pub enum Outcome {
     Held(guards::HoldReason),
     /// 生成もしなかった。
     Skipped(guards::SkipReason),
-    /// 答える材料が無い質問があるため人に聞く。
-    NeedsAnswer(Vec<String>),
     /// 生成に失敗した。**何も送らない**（仕様書 1.2-3「失敗時は沈黙する」）。
     Failed(String),
 }
@@ -106,18 +104,6 @@ pub async fn process(
     if let Some(reason) = draft.skipped {
         record(store, target, message, "skipped", Some(reason.label()), None)?;
         return Ok(Outcome::Skipped(reason));
-    }
-
-    if !draft.unanswerable.is_empty() {
-        record(
-            store,
-            target,
-            message,
-            "awaiting_review",
-            Some("needs_answer"),
-            None,
-        )?;
-        return Ok(Outcome::NeedsAnswer(draft.unanswerable));
     }
 
     // 長さの暴走は送らずに確認へ（仕様書 6.2.1-5）。

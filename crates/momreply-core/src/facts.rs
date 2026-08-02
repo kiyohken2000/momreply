@@ -68,7 +68,7 @@ JSON のみ。前置きも説明もつけない。該当が無ければ {"facts"
   {"section": "事実", "content": "保険証: 持っている", "source_index": 0, "confidence": "high"}
 ]}
 
-- section は "事実" | "答えたくないこと" | "伝え方" のいずれか
+- section は "事実" | "答えたくないこと" | "書き方" のいずれか
 - content は「項目: 内容」の形で 1 行。40 文字以内
 - source_index は入力の番号
 - confidence は high | medium | low。返信が短く解釈の幅があるものは low
@@ -213,7 +213,7 @@ pub async fn scan(
 fn normalize_section(s: &str) -> String {
     match s.trim() {
         "答えたくないこと" => "答えたくないこと".to_string(),
-        "伝え方" => "伝え方".to_string(),
+        "書き方" | "伝え方" => "書き方".to_string(),
         _ => "事実".to_string(),
     }
 }
@@ -280,7 +280,9 @@ mod tests {
     fn unknown_sections_collapse_to_facts() {
         assert_eq!(normalize_section("事実"), "事実");
         assert_eq!(normalize_section("答えたくないこと"), "答えたくないこと");
-        assert_eq!(normalize_section("伝え方"), "伝え方");
+        // 旧名は現在の見出しへ寄せる。
+        assert_eq!(normalize_section("書き方"), "書き方");
+        assert_eq!(normalize_section("伝え方"), "書き方");
         assert_eq!(normalize_section("健康・通院"), "事実");
         assert_eq!(normalize_section(""), "事実");
     }

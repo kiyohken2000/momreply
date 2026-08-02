@@ -46,8 +46,6 @@ export function canEnableAutoSend(): Promise<boolean> {
   return invoke("can_enable_auto_send");
 }
 
-export type PendingQuestion = { id: number; question: string };
-
 export type Pending = {
   chat_rowid: number;
   target_slug: string;
@@ -57,8 +55,6 @@ export type Pending = {
   draft: string;
   status: string;
   reason: string | null;
-  /** 答える材料が無い質問。あればこれを先に埋める。 */
-  questions: PendingQuestion[];
 };
 
 export function listPending(): Promise<Pending[]> {
@@ -82,23 +78,6 @@ export function skipPending(chatRowid: number): Promise<void> {
   return invoke("skip_pending", { chatRowid });
 }
 
-/** 質問への答え方。fact のときだけ self.md に書かれる。 */
-export type Stance = "fact" | "deflect" | "ignore";
-
-export const STANCES: { id: Stance; label: string; hint: string }[] = [
-  { id: "fact", label: "答える", hint: "入力した内容を事実として self.md に保存します" },
-  { id: "deflect", label: "ごまかす", hint: "はっきり答えず受け流します" },
-  { id: "ignore", label: "触れない", hint: "この質問には触れずに返します" },
-];
-
-export function resolveQuestion(
-  id: number,
-  stance: Stance,
-  answer: string | null,
-): Promise<void> {
-  return invoke("resolve_question", { id, stance, answer });
-}
-
 export type RunMode = { auto_send: boolean; dry_run: boolean };
 
 export function getRunMode(): Promise<RunMode> {
@@ -114,9 +93,27 @@ export const LENGTH_PRESETS = [
   { id: "mirror", label: "合わせる" },
   { id: "normal", label: "ふつう" },
   { id: "long", label: "長め" },
+  { id: "very_long", label: "かなり長め" },
 ] as const;
 
-/** `self.md` の全文。AI が事実として断定してよい唯一の材料。 */
+/** 目標文字数の指定は `chars:400` の形で reply_preset に入る。 */
+export const CHARS_PREFIX = "chars:";
+export const MIN_TARGET_CHARS = 10;
+export const MAX_TARGET_CHARS = 2000;
+
+/** プリセットではなく目標文字数が選ばれているなら、その文字数。 */
+export function targetChars(replyPreset: string): number | null {
+  if (!replyPreset.startsWith(CHARS_PREFIX)) return null;
+  const n = Number(replyPreset.slice(CHARS_PREFIX.length));
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * `self.md` の全文。
+ *
+ * 書き方の指示（「デスマス調にしない」など）と、言い切ってよい事実の置き場。
+ * 指示は文例より優先される。
+ */
 export function getSelfProfile(): Promise<string> {
   return invoke("get_self_profile");
 }
@@ -157,29 +154,11 @@ export type TargetView = {
   handles: string[];
   enabled: boolean;
   auto_send: boolean;
+  /** プリセット名か `chars:400`。[`targetChars`] で判別する。 */
   reply_preset: string;
-  /** precise = 具体的に答える / vague = 曖昧に返して人に聞かない */
-  reply_mode: string;
   /** 文体の手本の数。0 だとその人らしさが出ない。 */
   fewshot_count: number;
 };
-
-export type Preview = {
-  incoming: string;
-  received_at: number;
-  draft: string;
-  provider: string;
-  model: string;
-  latency_ms: number;
-};
-
-/**
- * 直近の受信メッセージで返信案を作ってみる。
- * 記録も送信もせず、処理位置も動かさない。
- */
-export function previewReply(slug: string): Promise<Preview> {
-  return invoke("preview_reply", { slug });
-}
 
 /**
  * 直近の受信で返信案を作り、確認待ち（返信タブ）に積む。
@@ -224,13 +203,12 @@ export function removeTarget(slug: string): Promise<void> {
 
 export function updateTarget(
   slug: string,
-  patch: { autoSend?: boolean; replyPreset?: string; replyMode?: string },
+  patch: { autoSend?: boolean; replyPreset?: string },
 ): Promise<void> {
   return invoke("update_target", {
     slug,
     autoSend: patch.autoSend ?? null,
     replyPreset: patch.replyPreset ?? null,
-    replyMode: patch.replyMode ?? null,
   });
 }
 

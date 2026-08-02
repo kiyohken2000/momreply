@@ -193,14 +193,6 @@ pub struct PendingView {
     draft: String,
     status: String,
     reason: Option<String>,
-    /// 答える材料が無い質問。あれば先にこれを埋める。
-    questions: Vec<PendingQuestionView>,
-}
-
-#[derive(Serialize)]
-pub struct PendingQuestionView {
-    id: i64,
-    question: String,
 }
 
 fn open_chat_db() -> Result<rusqlite::Connection, String> {
@@ -215,21 +207,6 @@ pub fn list_pending() -> Result<Vec<PendingView>, String> {
 
     let mut out = Vec::new();
     for item in items {
-        // 材料不足で止まったものは、質問を一緒に見せないと直せない。
-        let questions = if item.skip_reason.as_deref() == Some("needs_answer") {
-            store
-                .unanswered_questions(item.target_id)
-                .map_err(|e| e.to_string())?
-                .into_iter()
-                .map(|q| PendingQuestionView {
-                    id: q.id,
-                    question: q.question,
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-
         out.push(PendingView {
             chat_rowid: item.chat_rowid,
             target_slug: item.target_slug,
@@ -239,7 +216,6 @@ pub fn list_pending() -> Result<Vec<PendingView>, String> {
             draft: item.draft.unwrap_or_default(),
             status: item.status,
             reason: item.skip_reason,
-            questions,
         });
     }
     Ok(out)
@@ -386,37 +362,6 @@ pub fn skip_pending(chat_rowid: i64) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// 質問への対応を決める。
-///
-/// `stance` は `fact` | `deflect` | `ignore`。
-///
-/// **`self.md` に書くのは `fact` のときだけ。** 「ごまかす」「触れない」は
-/// 事実ではないので、書くと以後の生成が汚染される。
-#[tauri::command]
-pub fn resolve_question(
-    id: i64,
-    stance: String,
-    answer: Option<String>,
-) -> Result<(), String> {
-    let store = Store::open_default().map_err(|e| e.to_string())?;
-    let answer = answer.map(|a| a.trim().to_string()).filter(|a| !a.is_empty());
-
-    if stance == "fact" && answer.is_none() {
-        return Err("答えを入力してください".into());
-    }
-
-    let q = store
-        .resolve_question(id, &stance, answer.as_deref())
-        .map_err(|e| e.to_string())?;
-
-    if stance == "fact" {
-        if let Some(a) = &answer {
-            momreply_core::profile::append_fact(&q.question, a).map_err(|e| e.to_string())?;
-        }
-    }
-    Ok(())
-}
-
 // MARK: キルスイッチとドライラン（仕様書 6.4.6 / 6.4.7）
 
 #[derive(Serialize)]
@@ -534,9 +479,8 @@ pub struct TargetView {
     handles: Vec<String>,
     enabled: bool,
     auto_send: bool,
+    /// プリセット名か `chars:400`。
     reply_preset: String,
-    /// `precise` | `vague`
-    reply_mode: String,
     /// 文体の手本の数。0 だとその人らしさが出ない。
     fewshot_count: usize,
 }
@@ -556,7 +500,6 @@ pub fn list_targets() -> Result<Vec<TargetView>, String> {
             enabled: t.enabled,
             auto_send: t.auto_send,
             reply_preset: t.reply_preset,
-            reply_mode: t.reply_mode,
         })
         .collect())
 }
@@ -647,77 +590,6 @@ fn build_fewshot(
     momreply_core::fewshot::rebuild(chat_db, store, target.id, &target.handles, 40, 2000)
 }
 
-#[derive(Serialize)]
-pub struct Preview {
-    incoming: String,
-    received_at: i64,
-    draft: String,
-    provider: String,
-    model: String,
-    latency_ms: u64,
-}
-
-/// 直近の受信メッセージで返信案を作ってみる。**試すためだけのもの。**
-///
-/// # なぜカーソルを動かさないか
-///
-/// 仕様書 6.1 は「コードで初期化をスキップできるようにしてはいけない」と
-/// している。`last_seen_rowid` を UI から巻き戻せるようにすると、
-/// 過去のメッセージが処理対象に戻る経路ができ、自動送信が有効な状態では
-/// 古い会話へ返信が飛びうる。
-///
-/// ここでは生成して返すだけで、`processed_messages` にも書かず、
-/// カーソルも触らず、送信もしない。試すのに必要なのはそれだけである。
-#[tauri::command]
-pub async fn preview_reply(slug: String) -> Result<Preview, String> {
-    tauri::async_runtime::spawn_blocking(move || preview_blocking(&slug))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-fn preview_blocking(slug: &str) -> Result<Preview, String> {
-    use momreply_core::pipeline::{draft_reply, LengthPreset};
-
-    let chat_db = open_chat_db()?;
-    let store = Store::open_default().map_err(|e| e.to_string())?;
-    let target = store
-        .target_by_slug(slug)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("'{slug}' は登録されていません"))?;
-
-    let message = momreply_core::imessage::recent_messages(&chat_db, &target.handles, 50)
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .filter(|m| !m.is_from_me && m.skip.is_none() && m.body.is_some())
-        .next_back()
-        .ok_or("試せる受信メッセージが見つかりません")?;
-
-    let preset = LengthPreset::parse(&target.reply_preset).unwrap_or(LengthPreset::Mirror);
-    let draft = tauri::async_runtime::block_on(draft_reply(
-        &chat_db,
-        &store,
-        &target,
-        &message,
-        preset,
-        None,
-        momreply_core::pipeline::Urgency::Interactive,
-    ))
-    .map_err(|e| e.to_string())?;
-
-    Ok(Preview {
-        incoming: message.body.unwrap_or_default(),
-        received_at: message.date.timestamp(),
-        draft: if draft.text.trim().is_empty() && !draft.unanswerable.is_empty() {
-            format!("（答える材料が足りません: {}）", draft.unanswerable.join(" / "))
-        } else {
-            draft.text
-        },
-        provider: draft.provider,
-        model: draft.model,
-        latency_ms: draft.latency_ms,
-    })
-}
-
 /// 直近の受信で返信案を作り、**確認待ちに積む**。
 ///
 /// # なぜ処理位置の巻き戻しにしないか
@@ -785,11 +657,7 @@ fn draft_latest_blocking(slug: &str) -> Result<String, String> {
     .map_err(|e| e.to_string())?;
 
     if draft.text.trim().is_empty() {
-        return Err(if draft.unanswerable.is_empty() {
-            "返信案が空でした".into()
-        } else {
-            format!("答える材料が足りません: {}", draft.unanswerable.join(" / "))
-        });
+        return Err("返信案が空でした".into());
     }
 
     store
@@ -868,7 +736,6 @@ pub fn update_target(
     slug: String,
     auto_send: Option<bool>,
     reply_preset: Option<String>,
-    reply_mode: Option<String>,
 ) -> Result<(), String> {
     let store = Store::open_default().map_err(|e| e.to_string())?;
     let target = store
@@ -888,12 +755,6 @@ pub fn update_target(
         momreply_core::pipeline::LengthPreset::parse(&p)
             .ok_or_else(|| format!("不明な長さ: {p}"))?;
         store.set_reply_preset(target.id, &p).map_err(|e| e.to_string())?;
-    }
-    if let Some(m) = reply_mode {
-        if m != "precise" && m != "vague" {
-            return Err(format!("不明な方針: {m}"));
-        }
-        store.set_reply_mode(target.id, &m).map_err(|e| e.to_string())?;
     }
     Ok(())
 }

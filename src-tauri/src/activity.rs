@@ -37,6 +37,25 @@ impl Phase {
     }
 }
 
+/// メニューバーのアイコン。**テンプレート画像はアルファしか見ない**ので、
+/// 色ではなく輪郭そのものを変えて区別する。22px まで縮んでも分かるよう、
+/// 中身の詰まり方で差をつけてある。
+///
+/// - 待受中: 吹き出しに点が 3 つ（何も起きていない）
+/// - 待機中: 輪郭だけ（中身がまだ無い）
+/// - 生成中: 塗りつぶし（中身が詰まっている）
+pub const ICON_IDLE: &[u8] = include_bytes!("../icons/tray.png");
+const ICON_SETTLING: &[u8] = include_bytes!("../icons/tray-settling.png");
+const ICON_WORKING: &[u8] = include_bytes!("../icons/tray-working.png");
+
+fn icon_for(activity: Option<&Activity>) -> &'static [u8] {
+    match activity.map(|a| a.phase) {
+        Some(Phase::Settling) => ICON_SETTLING,
+        Some(Phase::Generating) => ICON_WORKING,
+        None => ICON_IDLE,
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Activity {
     pub who: String,
@@ -91,16 +110,25 @@ pub fn current() -> Option<Activity> {
 
 /// フロントとメニューバーの両方へ反映する。
 ///
-/// ポップオーバーを開いていないときは、メニューバーのツールチップだけが
-/// 手がかりになる。
+/// ポップオーバーを開いていないときは、メニューバーだけが手がかりになる。
+/// アイコンの形で今の状態を示し、詳しくはツールチップに出す。
 fn announce(app: &AppHandle, activity: Option<&Activity>) {
     let _ = app.emit(EVENT_ACTIVITY, activity);
 
-    if let Some(tray) = app.tray_by_id("main") {
-        let tooltip = match activity {
-            Some(a) => format!("MomReply — {}（{}）", a.label, a.who),
-            None => "MomReply".to_string(),
-        };
-        let _ = tray.set_tooltip(Some(&tooltip));
+    let Some(tray) = app.tray_by_id("main") else {
+        return;
+    };
+
+    let tooltip = match activity {
+        Some(a) => format!("MomReply — {}（{}）", a.label, a.who),
+        None => "MomReply".to_string(),
+    };
+    let _ = tray.set_tooltip(Some(&tooltip));
+
+    if let Ok(image) = tauri::image::Image::from_bytes(icon_for(activity)) {
+        let _ = tray.set_icon(Some(image));
+        // set_icon はテンプレート指定を引き継がない。指定し直さないと
+        // ダークモードで色が反転しなくなる。
+        let _ = tray.set_icon_as_template(true);
     }
 }

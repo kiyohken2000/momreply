@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  conversation,
   draftLatest,
   listPending,
   listTargets,
@@ -9,6 +10,7 @@ import {
   LENGTH_PRESETS,
   type Pending,
   type TargetView,
+  type Turn,
 } from "../api";
 
 /** 実行中の操作。何が起きているか分からない時間を作らないために持つ。 */
@@ -124,6 +126,9 @@ export default function Replies() {
 
       {/* スクロールするのはここだけ。 */}
       <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-2">
+        <Context chatRowid={current.chat_rowid} />
+
+        {/* 返信の対象。連投なら、まとめた分がすべてここに入る。 */}
         <div className="rounded bg-neutral-100 p-2 text-xs whitespace-pre-wrap dark:bg-neutral-800">
           {current.incoming}
         </div>
@@ -131,7 +136,6 @@ export default function Replies() {
           {new Date(current.received_at * 1000).toLocaleString("ja-JP")}
           {current.reason && ` ・ ${current.reason}`}
         </div>
-
       </div>
 
       {/* ここから下は常に見える。書きかけの返信が隠れないようにする。 */}
@@ -332,6 +336,79 @@ function Empty({ onDrafted }: { onDrafted: () => Promise<void> }) {
         </p>
       )}
       {error && <p className="mt-3 text-xs break-words text-red-600">{error}</p>}
+    </div>
+  );
+}
+
+/**
+ * 生成が読んだ、返信対象より前の会話。
+ *
+ * # なぜ既定で畳むか
+ *
+ * 20 件あると、肝心の「いま返信する相手のメッセージ」が上へ押し出される。
+ * ポップオーバーは 380x560 しかない。ふだんは対象と下書きだけが見えていて、
+ * 「なぜこの返信になったのか」を追いたいときだけ開ければいい。
+ *
+ * 開いたときに初めて読む。閉じたままなら chat.db を触らない。
+ */
+function Context({ chatRowid }: { chatRowid: number }) {
+  const [open, setOpen] = useState(false);
+  const [turns, setTurns] = useState<Turn[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // 別の案に切り替わったら畳み直す。前の会話が残っていると読み違える。
+  useEffect(() => {
+    setOpen(false);
+    setTurns(null);
+    setError(null);
+  }, [chatRowid]);
+
+  useEffect(() => {
+    if (!open || turns !== null) return;
+    conversation(chatRowid)
+      .then(setTurns)
+      .catch((e) => {
+        setError(String(e));
+        setTurns([]);
+      });
+  }, [open, turns, chatRowid]);
+
+  return (
+    <div className="mb-2">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="text-[11px] text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-100"
+      >
+        {open ? "▾ " : "▸ "}
+        生成が読んだ会話
+        {turns !== null && turns.length > 0 && `（${turns.length}件）`}
+      </button>
+
+      {open && (
+        <div className="mt-1 rounded border border-neutral-200 p-2 dark:border-neutral-700">
+          {turns === null && <p className="text-[11px] text-neutral-400">読み込み中…</p>}
+          {turns?.length === 0 && !error && (
+            <p className="text-[11px] text-neutral-400">この前のやり取りはありません。</p>
+          )}
+          {turns?.map((t, i) => (
+            <div key={i} className="mb-1 flex gap-1.5 text-[11px] last:mb-0">
+              <span
+                className={
+                  "shrink-0 " + (t.from_me ? "text-blue-600" : "text-neutral-400")
+                }
+              >
+                {t.from_me ? "自分" : "相手"}
+              </span>
+              <span className="whitespace-pre-wrap">{t.body}</span>
+            </div>
+          ))}
+          {error && <p className="text-[11px] break-words text-red-600">{error}</p>}
+          <p className="mt-2 text-[10px] text-neutral-400">
+            返信案を作るときに、これがそのまま LLM へ渡っています。
+          </p>
+        </div>
+      )}
     </div>
   );
 }

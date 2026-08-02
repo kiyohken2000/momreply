@@ -221,6 +221,55 @@ pub fn list_pending() -> Result<Vec<PendingView>, String> {
     Ok(out)
 }
 
+/// 生成が読んだ会話の 1 行。
+#[derive(Serialize)]
+pub struct Turn {
+    from_me: bool,
+    body: String,
+}
+
+/// 返信案を作るときに読んだ、対象より前の会話。
+///
+/// 組み立ては [`momreply_core::pipeline::conversation`] に一本化してある。
+/// 画面に出すものと LLM に渡すものがずれると、なぜその返信になったのかを
+/// 説明できなくなる。
+///
+/// **chat.db から都度読む。** 生成時点のコピーではないので、確認するまでに
+/// 新しいやり取りがあれば、それも含まれる。
+#[tauri::command]
+pub fn conversation(chat_rowid: i64) -> Result<Vec<Turn>, String> {
+    let store = Store::open_default().map_err(|e| e.to_string())?;
+    let item = store
+        .pending_items(50)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|i| i.chat_rowid == chat_rowid)
+        .ok_or_else(|| format!("#{chat_rowid} は確認待ちにありません"))?;
+    let target = store
+        .target_by_slug(&item.target_slug)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("'{}' は登録されていません", item.target_slug))?;
+
+    let chat_db = open_chat_db()?;
+    let Some(message) =
+        momreply_core::imessage::reader::message_by_rowid(&chat_db, &target.handles, chat_rowid)
+            .map_err(|e| e.to_string())?
+    else {
+        // 取り消されると chat.db から消える。会話が出せないだけで、
+        // 返信案そのものは確認できる。
+        return Ok(Vec::new());
+    };
+
+    let convo = momreply_core::pipeline::conversation(&chat_db, &target.handles, &message)
+        .map_err(|e| e.to_string())?;
+
+    Ok(convo
+        .recent
+        .into_iter()
+        .map(|(from_me, body)| Turn { from_me, body })
+        .collect())
+}
+
 /// 人が確認して送る。**送信直前の既返信チェックは core 側で行う。**
 ///
 /// 送信の検証は最大 30 秒かかる。chat.db の `Connection` は `Sync` でなく

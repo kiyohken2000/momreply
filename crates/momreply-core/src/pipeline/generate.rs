@@ -104,6 +104,43 @@ impl LengthPreset {
     }
 }
 
+/// プロンプトに入れる会話。
+///
+/// **UI もこれを表示する。** 見せているものと渡したものがずれると、
+/// なぜその返信になったのか説明できなくなる。だから組み立ては 1 か所。
+pub struct Conversation {
+    /// 返信の対象。連投ならまとめた分すべて（古い順）。
+    pub burst: Vec<imessage::Message>,
+    /// その前の会話（古い順）。`(自分か, 本文)`。
+    pub recent: Vec<(bool, String)>,
+}
+
+/// 「直近の会話」として渡す件数。
+const RECENT_TURNS: u32 = 20;
+
+/// 返信対象の周辺を組み立てる。
+pub fn conversation(
+    chat_db: &Connection,
+    handles: &[String],
+    message: &imessage::Message,
+) -> Result<Conversation> {
+    // 相手が数行に分けて送ってきた分を 1 通にまとめる。
+    //
+    // 最後の 1 行だけを見ると中身が無いことがある。「返信なければ行く」
+    // だけが残り、実際の問いは前の行にある、という形が実データに出る。
+    let burst = imessage::burst(chat_db, handles, message, imessage::BURST_WINDOW)?;
+
+    // まとめた分を履歴にも出すと、同じ文が 2 回入って重みが狂う。
+    let in_burst: Vec<i64> = burst.iter().map(|m| m.rowid).collect();
+    let recent = imessage::recent_messages(chat_db, handles, RECENT_TURNS)?
+        .into_iter()
+        .filter(|m| m.skip.is_none() && !in_burst.contains(&m.rowid))
+        .filter_map(|m| m.body.map(|b| (m.is_from_me, b)))
+        .collect();
+
+    Ok(Conversation { burst, recent })
+}
+
 pub struct Draft {
     pub chat_rowid: i64,
     pub incoming: String,
@@ -175,13 +212,9 @@ pub async fn draft_reply(
         });
     }
 
-    // 相手が数行に分けて送ってきた分を 1 通にまとめる。
-    //
-    // 最後の 1 行だけを見ると中身が無いことがある。「返信なければ行く」
-    // だけが残り、実際の問いは前の行にある、という形が実データに出る。
-    let group = imessage::burst(chat_db, &target.handles, message, imessage::BURST_WINDOW)?;
-    let incoming = if group.len() > 1 {
-        imessage::burst_text(&group)
+    let convo = conversation(chat_db, &target.handles, message)?;
+    let incoming = if convo.burst.len() > 1 {
+        imessage::burst_text(&convo.burst)
     } else {
         incoming
     };
@@ -196,14 +229,6 @@ pub async fn draft_reply(
         .filter(|m| !m.trim().is_empty())
         .unwrap_or_else(|| provider.default_model().to_string());
 
-    // まとめた分を履歴にも出すと、同じ文が 2 回入って重みが狂う。
-    let in_group: Vec<i64> = group.iter().map(|m| m.rowid).collect();
-    let recent: Vec<(bool, String)> =
-        imessage::recent_messages(chat_db, &target.handles, 20)?
-            .into_iter()
-            .filter(|m| m.skip.is_none() && !in_group.contains(&m.rowid))
-            .filter_map(|m| m.body.map(|b| (m.is_from_me, b)))
-            .collect();
 
     // 再生成なら前回の結果を引く。無ければ通常生成に落とす。
     let retry = match &redo {
@@ -223,7 +248,7 @@ pub async fn draft_reply(
         self_profile: profile::read_self()?,
         target_profile: profile::read_target(&target.slug, &target.display_name)?,
         fewshot: store.fewshot(target.id)?,
-        recent,
+        recent: convo.recent,
         incoming: incoming.clone(),
         questions: found,
         now: chrono::Local::now().format("%Y年%-m月%-d日(%a) %H:%M").to_string(),

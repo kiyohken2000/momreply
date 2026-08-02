@@ -43,6 +43,8 @@ pub fn run() {
             commands::list_fact_candidates,
             commands::approve_fact,
             commands::reject_fact,
+            commands::chat_db_status,
+            commands::open_full_disk_access_settings,
             commands::list_pending,
             commands::current_activity,
             commands::conversation,

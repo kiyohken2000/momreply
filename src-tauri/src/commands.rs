@@ -195,6 +195,87 @@ pub struct PendingView {
     reason: Option<String>,
 }
 
+/// chat.db を読めるか。**フルディスクアクセスの有無がここに出る。**
+#[derive(Serialize)]
+pub struct ChatDbStatus {
+    ok: bool,
+    path: String,
+    /// 読めない理由。読めるときは `None`。
+    reason: Option<String>,
+    /// フルディスクアクセスが原因とみられるか。案内の出し分けに使う。
+    needs_full_disk_access: bool,
+}
+
+/// chat.db が読めるかを確かめる。
+///
+/// フルディスクアクセスが無いと、`~/Library/Messages/chat.db` は
+/// **存在するのに開けない**。この状態で放っておくと、何も起きないまま
+/// 「メッセージが 1 件も取れない」ことになり、原因も分からない。
+///
+/// 権限そのものを問い合わせる API は無いので、実際に開いて 1 行読む。
+#[tauri::command]
+pub fn chat_db_status() -> ChatDbStatus {
+    let path = match momreply_core::imessage::default_path() {
+        Ok(p) => p,
+        Err(why) => {
+            return ChatDbStatus {
+                ok: false,
+                path: String::new(),
+                reason: Some(why.to_string()),
+                needs_full_disk_access: false,
+            }
+        }
+    };
+    let shown = path.display().to_string();
+
+    // ファイルが無いのは、メッセージを一度も使っていない場合。
+    // 権限の問題ではないので、案内を変える。
+    if !path.is_file() {
+        return ChatDbStatus {
+            ok: false,
+            path: shown,
+            reason: Some("Messages のデータベースが見つかりません".into()),
+            needs_full_disk_access: false,
+        };
+    }
+
+    match momreply_core::imessage::open_readonly(&path).and_then(|conn| {
+        conn.query_row("SELECT ROWID FROM message LIMIT 1", [], |_| Ok(()))
+            .or_else(|e| match e {
+                // 1 件も無いだけなら読めている。
+                rusqlite::Error::QueryReturnedNoRows => Ok(()),
+                other => Err(other),
+            })
+            .map_err(Into::into)
+    }) {
+        Ok(()) => ChatDbStatus {
+            ok: true,
+            path: shown,
+            reason: None,
+            needs_full_disk_access: false,
+        },
+        Err(why) => ChatDbStatus {
+            ok: false,
+            path: shown,
+            reason: Some(why.to_string()),
+            // ファイルはあるのに開けない。ほぼ権限。
+            needs_full_disk_access: true,
+        },
+    }
+}
+
+/// システム設定のフルディスクアクセスを開く。
+///
+/// 場所を文章で説明しても、たどり着けないことのほうが多い。
+#[tauri::command]
+pub fn open_full_disk_access_settings() -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 fn open_chat_db() -> Result<rusqlite::Connection, String> {
     let path = momreply_core::imessage::default_path().map_err(|e| e.to_string())?;
     momreply_core::imessage::open_readonly(&path).map_err(|e| e.to_string())

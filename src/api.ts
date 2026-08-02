@@ -46,6 +46,23 @@ export function canEnableAutoSend(): Promise<boolean> {
   return invoke("can_enable_auto_send");
 }
 
+/** chat.db を読めるか。フルディスクアクセスの有無がここに出る。 */
+export type ChatDbStatus = {
+  ok: boolean;
+  path: string;
+  reason: string | null;
+  needs_full_disk_access: boolean;
+};
+
+export function chatDbStatus(): Promise<ChatDbStatus> {
+  return invoke("chat_db_status");
+}
+
+/** システム設定のフルディスクアクセスを開く。 */
+export function openFullDiskAccessSettings(): Promise<void> {
+  return invoke("open_full_disk_access_settings");
+}
+
 export type Pending = {
   chat_rowid: number;
   target_slug: string;

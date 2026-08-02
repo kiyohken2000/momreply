@@ -271,7 +271,29 @@ pub async fn draft_reply(
             temperature: 0.8,
         },
     )
-    .await?;
+    .await;
+
+    // 失敗も残す。**失敗時は沈黙する**（仕様書 1.2-3）ので、記録が無いと
+    // 「返信が来ない」以外に手がかりが残らない。原因はここにしか出ない。
+    let response = match response {
+        Ok(r) => r,
+        Err(why) => {
+            let _ = store.log_generation(&crate::store::GenerationRecord {
+                target_id: target.id,
+                chat_rowid: message.rowid,
+                kind,
+                provider: provider.id(),
+                model: &model,
+                input_tokens: None,
+                output_tokens: None,
+                latency_ms: 0,
+                user_instruction: redo.as_ref().and_then(|r| r.instruction),
+                output: None,
+                error: Some(&why.to_string()),
+            });
+            return Err(why);
+        }
+    };
 
     store.log_generation(&crate::store::GenerationRecord {
         target_id: target.id,

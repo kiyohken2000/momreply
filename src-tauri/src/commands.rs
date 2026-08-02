@@ -195,6 +195,66 @@ pub struct PendingView {
     reason: Option<String>,
 }
 
+/// いま動いているアプリの版。
+#[tauri::command]
+pub fn app_version(app: tauri::AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
+/// 新しい版があるか。
+#[derive(Serialize)]
+pub struct UpdateInfo {
+    available: bool,
+    version: String,
+    notes: Option<String>,
+}
+
+/// GitHub Releases を見て、新しい版があるか調べる。
+///
+/// **署名を検証してから受け入れる。** 公開鍵は tauri.conf.json にあり、
+/// それに対応する秘密鍵で署名されたものしか適用されない。置き場所が
+/// 乗っ取られても、署名の無いものは入らない。
+#[tauri::command]
+pub async fn check_update(app: tauri::AppHandle) -> Result<UpdateInfo, String> {
+    use tauri_plugin_updater::UpdaterExt;
+
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    match updater.check().await.map_err(|e| e.to_string())? {
+        Some(update) => Ok(UpdateInfo {
+            available: true,
+            version: update.version.clone(),
+            notes: update.body.clone(),
+        }),
+        None => Ok(UpdateInfo {
+            available: false,
+            version: app.package_info().version.to_string(),
+            notes: None,
+        }),
+    }
+}
+
+/// 新しい版を入れて、アプリを起動し直す。
+///
+/// **戻ってこない。** 成功すればここで再起動する。
+#[tauri::command]
+pub async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    let Some(update) = updater.check().await.map_err(|e| e.to_string())? else {
+        return Err("新しい版はありません".into());
+    };
+
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // 監視スレッドは道半ばで落ちるが、処理位置は app.db にあるので
+    // 起動し直せば続きから拾う。
+    app.restart();
+}
+
 /// ログイン時の自動起動が有効か。
 ///
 /// 状態は macOS の LaunchAgent が持つ。app.db には持たない。

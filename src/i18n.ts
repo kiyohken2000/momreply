@@ -322,6 +322,20 @@ const DICT = {
   },
   "settings.appleUnimplemented": { ja: "未実装", en: "Not implemented" },
   "settings.noKeyNeeded": { ja: "キー不要", en: "No key needed" },
+  "settings.version": { ja: "バージョン", en: "Version" },
+  "settings.checkUpdate": { ja: "更新を確認", en: "Check for updates" },
+  "settings.checking": { ja: "確認中…", en: "Checking…" },
+  "settings.upToDate": { ja: "最新です。", en: "Up to date." },
+  "settings.updateFound": {
+    ja: "新しい版 {version} があります。",
+    en: "Version {version} is available.",
+  },
+  "settings.install": { ja: "入れて再起動", en: "Install and restart" },
+  "settings.installing": { ja: "入れています…", en: "Installing…" },
+  "settings.updateNote": {
+    ja: "更新は署名を検証してから適用されます。署名の無いものは入りません。",
+    en: "Updates are verified against a signature before being applied. Unsigned builds are rejected.",
+  },
   "settings.language": { ja: "表示言語", en: "Language" },
   "settings.languageNote": {
     ja: "画面の文言だけが変わります。返信は相手のメッセージと同じ言語で書かれます。",

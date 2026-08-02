@@ -21,6 +21,8 @@ pub const EVENT_UPDATED: &str = "momreply://updated";
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_positioner::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         // ログイン時に自動で起動する（既定は無効）。
         // 再起動のたびに手で立ち上げ直すのでは、放置して使えない。
         .plugin(tauri_plugin_autostart::init(
@@ -52,6 +54,9 @@ pub fn run() {
             commands::reject_fact,
             commands::chat_db_status,
             commands::get_ui_language,
+            commands::app_version,
+            commands::check_update,
+            commands::install_update,
             commands::get_autostart,
             commands::set_autostart,
             commands::set_ui_language,

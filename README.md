@@ -5,9 +5,21 @@
 生成した返信は、確認したうえで送るか、条件を満たせば自動で送る。
 返信対象は chat.db の会話一覧から任意に選べる。
 
-> **状態: 動く。ただし配布の体裁はまだ。**
+> **状態: 動く。Apple Silicon 専用。**
 > 受信 → 生成 → 自動送信 → 送信結果の検証まで、実際のやり取りで通っている。
-> ビルド済みアプリは配っていないので、使うには自分でビルドする。
+
+## 入れる
+
+[Releases](https://github.com/kiyohken2000/momreply/releases/latest) から `.dmg` を落として、
+`MomReply.app` を `アプリケーション` にドラッグする。
+
+署名と公証は済んでいるので、ダブルクリックで開く。
+以後の更新は、設定タブの「更新を確認」から入る。
+
+**Intel Mac には対応していない。** Apple Silicon 専用のビルドしか配っていない。
+
+中身を見てから入れたい場合は、下の「ソースから建てる」を読む。
+iMessage の全文を読んで LLM へ送るツールなので、その道は残してある。
 
 ---
 
@@ -34,6 +46,7 @@
 | | |
 |---|---|
 | OS | macOS 13 以降（開発・検証は macOS 26.6） |
+| CPU | **Apple Silicon 専用**（Intel Mac は非対応） |
 | Rust | 1.95 以降（`libsqlite3-sys` が要求する） |
 | Node.js | 20 以降（フロントエンドのビルドに使う） |
 | Xcode Command Line Tools | `xcode-select --install` |
@@ -49,8 +62,8 @@ rustup default stable
 
 `rust-toolchain.toml` で stable に固定してあるので、リポジトリ内では自動で切り替わる。
 
-**ビルド済みのアプリは配っていない。** 自分でビルドする。
-iMessage の全文を読み、LLM へ送るツールなので、中身を見てから入れられるほうがいい。
+ここから先は**ソースから建てる**場合の手順。
+ビルド済みを使うなら [Releases](https://github.com/kiyohken2000/momreply/releases/latest) から入れる。
 
 ### フルディスクアクセス
 
@@ -73,7 +86,7 @@ chat.db（`~/Library/Messages/chat.db`）の読み取りに必要。
 
 ---
 
-## 使い方
+## ソースから建てる
 
 ### 1. ビルドする
 
@@ -95,6 +108,22 @@ open /Applications/MomReply.app
 > `scripts/build.sh` は、手元にコード署名証明書があればそれで署名し直す。
 > `cargo tauri build` が付ける ad-hoc 署名はビルドのたびに変わり、
 > Keychain の「常に許可」が毎回外れるため。
+>
+> Developer ID 証明書と公証の資格情報があれば、公証と staple まで行う。
+> 無くても手元で使うぶんには困らない。
+
+### 配布する（開発者向け）
+
+```sh
+./scripts/build.sh          # 署名・公証・更新用の署名
+./scripts/release.sh v0.1.0 # GitHub Releases へ
+```
+
+`release.sh` は `latest.json` をビルド結果から組み立てる。
+自動更新はこれを見る。手で書くと署名を入れ間違えて、更新が黙って拒否される。
+
+**更新用の署名鍵（`~/.tauri/momreply.key`）はリポジトリに入れない。**
+これで署名されたものしか更新として適用されないが、失うと以後どの版も配れなくなる。
 
 ### 2. フルディスクアクセスを許可する
 
@@ -252,7 +281,7 @@ chat.db へのアクセスは `momreply-core::imessage` に一本化してある
 - モデル単価の登録（金額上限が効かない原因）
 - 相手の表示名の変更 UI
 - 通知をタップしてポップオーバーを開く
-- Developer ID 署名と公証（ビルド済みアプリの配布）
+- Intel Mac 対応（ユニバーサルバイナリ）
 
 詳細な仕様と受け入れ基準は `docs/momreply-spec.md`。
 

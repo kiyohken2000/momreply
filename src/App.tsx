@@ -20,6 +20,7 @@ import ActivityBar from "./components/ActivityBar";
 import { useLang } from "./lang";
 import { LANGS } from "./i18n";
 import NeedsAccess from "./components/NeedsAccess";
+import UpdateRow from "./components/UpdateRow";
 import ApiKeyRow from "./components/ApiKeyRow";
 import SelfProfile from "./components/SelfProfile";
 import Replies from "./components/Replies";
@@ -149,6 +150,8 @@ export default function App() {
 
             {tab === "settings" && (
               <section className="h-full overflow-y-auto">
+                <UpdateRow />
+
                 <h2 className="px-4 pt-4 pb-2 text-xs font-semibold tracking-wide text-neutral-500 uppercase dark:text-neutral-400">
                   {t("settings.language")}
                 </h2>

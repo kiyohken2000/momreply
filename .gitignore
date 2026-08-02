@@ -30,3 +30,7 @@ config.toml
 .claude/settings.local.json
 
 _temp/
+# 自動更新の署名鍵。**これが漏れると、偽の更新を配れる。**
+# 既定の置き場所は ~/.tauri/ だが、リポジトリに置く事故を防ぐ。
+*.key
+*.key.pub

@@ -40,6 +40,25 @@ set -eu
 cd "$(dirname "$0")/.."
 
 NOTARY_PROFILE="${MOMREPLY_NOTARY_PROFILE:-momreply}"
+UPDATER_KEY="${MOMREPLY_UPDATER_KEY:-$HOME/.tauri/momreply.key}"
+
+# --- 自動更新の署名 ---
+#
+# 更新は**この鍵で署名されたものしか適用されない**（公開鍵は
+# tauri.conf.json にある）。置き場所が乗っ取られても、署名の無いものは
+# 入らない。逆に、鍵を失うと以後どの版も配れなくなる。
+#
+# **リポジトリには絶対に入れない。** 既定の置き場所は ~/.tauri/。
+if [ -f "$UPDATER_KEY" ]; then
+	TAURI_SIGNING_PRIVATE_KEY_PATH="$UPDATER_KEY"
+	export TAURI_SIGNING_PRIVATE_KEY_PATH
+	export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+	echo "==> 更新用の署名鍵: $UPDATER_KEY"
+else
+	echo "更新用の署名鍵がありません（$UPDATER_KEY）。"
+	echo "作るには: cargo tauri signer generate -w $UPDATER_KEY --password ''"
+	echo "この版は自動更新の対象になりません。"
+fi
 
 # --- 証明書を決める ---
 pick_identity() {
@@ -125,11 +144,15 @@ fi
 
 echo
 echo "==> できたもの"
-ls -1d target/release/bundle/macos/*.app target/release/bundle/dmg/*.dmg 2>/dev/null
+ls -1d target/release/bundle/macos/*.app target/release/bundle/dmg/*.dmg \
+	target/release/bundle/macos/*.tar.gz target/release/bundle/macos/*.sig 2>/dev/null
 
 cat <<'EOS'
 
-次の手順:
+公開するときは、.dmg と .tar.gz と .sig を GitHub Releases に上げ、
+latest.json を添える（scripts/release.sh がやります）。
+
+手元で使う手順:
 
   1. cp -R target/release/bundle/macos/MomReply.app /Applications/
   2. open /Applications/MomReply.app

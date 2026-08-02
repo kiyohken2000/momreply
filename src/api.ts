@@ -49,6 +49,27 @@ export function canEnableAutoSend(): Promise<boolean> {
   return invoke("can_enable_auto_send");
 }
 
+/** いま動いているアプリの版。 */
+export function appVersion(): Promise<string> {
+  return invoke("app_version");
+}
+
+export type UpdateInfo = {
+  available: boolean;
+  version: string;
+  notes: string | null;
+};
+
+/** GitHub Releases を見る。署名を検証してから受け入れる。 */
+export function checkUpdate(): Promise<UpdateInfo> {
+  return invoke("check_update");
+}
+
+/** 入れて起動し直す。**成功すると戻ってこない。** */
+export function installUpdate(): Promise<void> {
+  return invoke("install_update");
+}
+
 /** ログイン時の自動起動。状態は macOS の LaunchAgent が持つ。 */
 export function getAutostart(): Promise<boolean> {
   return invoke("get_autostart");
